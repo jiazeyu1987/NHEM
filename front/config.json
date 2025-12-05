@@ -1,0 +1,29 @@
+{
+  "server": {
+    "host": "localhost",
+    "api_port": 8421,
+    "enable_cors": true
+  },
+  "roi_capture": {
+    "frame_rate": 5,
+    "update_interval": 0.5,
+    "default_config": {
+      "x1": 10,
+      "y1": 20,
+      "x2": 210,
+      "y2": 170
+    }
+  },
+  "peak_detection": {
+    "threshold": 110.5,
+    "margin_frames": 6,
+    "difference_threshold": 2.3,
+    "min_region_length": 4
+  },
+  "display": {
+    "fps": 45,
+    "buffer_size": 100,
+    "y_axis_min": 0,
+    "y_axis_max": 200
+  }
+}

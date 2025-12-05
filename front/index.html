@@ -1,0 +1,3041 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NHEM - New HEM Monitor</title>
+    <style>
+        /* --- VS Code Theme Variables --- */
+        :root {
+            --bg-color: #1e1e1e;
+            --sidebar-bg: #252526;
+            --activity-bar-bg: #333333;
+            --text-color: #cccccc;
+            --text-highlight: #ffffff;
+            --accent-color: #007acc;
+            --accent-hover: #0062a3;
+            --border-color: #3e3e42;
+            --input-bg: #3c3c3c;
+            --button-bg: #0e639c;
+            --button-hover: #1177bb;
+            --success-color: #4ec9b0;
+            --warning-color: #dcdcaa;
+            --error-color: #f48771;
+            --grid-color: #404040;
+            --baseline-color: #dcdcaa;
+            --chart-line-color: #4ec9b0;
+            --panel-header-bg: #303031;
+            --status-bar-bg: #007acc;
+        }
+
+        /* --- Global Reset & Layout --- */
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+            font-size: 13px;
+        }
+
+        /* --- Sidebar --- */
+        .sidebar {
+            width: 300px;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .panel {
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .panel-header {
+            background-color: var(--panel-header-bg);
+            padding: 8px 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .panel-content {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        /* --- UI Components --- */
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+        }
+
+        .status-value {
+            color: var(--text-highlight);
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+
+        .indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .indicator.connected { background-color: var(--success-color); box-shadow: 0 0 5px var(--success-color); }
+        .indicator.disconnected { background-color: var(--error-color); }
+        .indicator.connecting { background-color: var(--warning-color); animation: pulse 1s infinite; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+        .control-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        button {
+            background-color: var(--button-bg);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 2px;
+            transition: background 0.2s;
+        }
+        button:hover:not(:disabled) { background-color: var(--button-hover); }
+        button:disabled { background-color: #3a3a3a; color: #888; cursor: not-allowed; }
+        button.danger { background-color: #a1260d; }
+        button.danger:hover { background-color: #c93312; }
+
+        /* 截取按钮特殊样式 */
+        #capture-btn {
+            background: linear-gradient(135deg, #007acc 0%, #005a9e 100%);
+            border: 1px solid #005a9e;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        #capture-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #1177bb 0%, #0066aa 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0, 122, 204, 0.3);
+        }
+
+        #capture-btn:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 122, 204, 0.3);
+        }
+
+        #capture-btn:disabled {
+            background: linear-gradient(135deg, #3a3a3a 0%, #2d2d2d 100%);
+            border-color: #555;
+            cursor: not-allowed;
+        }
+
+        /* 截取成功动画 */
+        @keyframes capture-success {
+            0% { background: linear-gradient(135deg, #007acc 0%, #005a9e 100%); }
+            50% { background: linear-gradient(135deg, #4ec9b0 0%, #3ba58f 100%); }
+            100% { background: linear-gradient(135deg, #007acc 0%, #005a9e 100%); }
+        }
+
+        #capture-btn.success {
+            animation: capture-success 1s ease-in-out;
+        }
+
+        /* 子波形容器显示动画 */
+        .subwaveform-container {
+            height: 200px;
+            border-top: 1px solid var(--border-color);
+            background-color: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+        }
+
+        .subwaveform-container.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* 截取信息面板淡入动画 */
+        #capture-info {
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            opacity: 0;
+            transform: translateY(-10px);
+        }
+
+        #capture-info.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+        .toggle-switch input { display: none; }
+        .slider {
+            width: 30px;
+            height: 16px;
+            background-color: #3a3a3a;
+            border-radius: 10px;
+            position: relative;
+            margin-right: 8px;
+            transition: .2s;
+        }
+        .slider:before {
+            content: "";
+            position: absolute;
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            border-radius: 50%;
+            transition: .2s;
+        }
+        input:checked + .slider { background-color: var(--accent-color); }
+        input:checked + .slider:before { transform: translateX(14px); }
+
+        .range-slider-container {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        input[type=range] {
+            width: 100%;
+            background: transparent;
+            -webkit-appearance: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 14px;
+            width: 14px;
+            border-radius: 50%;
+            background: var(--accent-color);
+            cursor: pointer;
+            margin-top: -5px;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            background: #3a3a3a;
+            border-radius: 2px;
+        }
+
+        #roi-canvas {
+            background-color: #000;
+            border: 1px solid var(--border-color);
+            width: 200px;
+            height: 150px;
+            margin: 0 auto;
+            image-rendering: pixelated;
+        }
+
+        /* --- Main Content --- */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: #1e1e1e;
+            position: relative;
+        }
+
+        .chart-toolbar {
+            height: 35px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            background-color: var(--bg-color);
+        }
+
+        .toolbar-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-left: auto;
+        }
+
+        .ui-toggle-btn {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 6px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            min-width: 60px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ui-toggle-btn:hover {
+            background: #4a9eff;
+            transform: translateY(-1px);
+        }
+
+        .ui-toggle-btn:active {
+            transform: translateY(0);
+        }
+
+        /* UI模式切换样式 */
+        body.expanded-mode .hide-in-compact {
+            display: block !important;
+        }
+
+        body.compact-mode {
+            background-color: var(--vscode-editor-background);
+        }
+
+        body.compact-mode .hide-in-compact {
+            display: none !important;
+            opacity: 0;
+            height: 0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* 简化模式下的布局调整 */
+        body.compact-mode .sidebar {
+            width: 200px;
+            transition: width 0.3s ease;
+        }
+
+        body.compact-mode .main-content {
+            margin-left: 200px;
+            transition: margin-left 0.3s ease;
+        }
+
+        body.expanded-mode .sidebar {
+            width: 280px;
+            transition: width 0.3s ease;
+        }
+
+        body.expanded-mode .main-content {
+            margin-left: 280px;
+            transition: margin-left 0.3s ease;
+        }
+
+        /* 平滑过渡效果 */
+        .hide-in-compact {
+            transition: opacity 0.3s ease, max-height 0.3s ease, margin 0.3s ease, padding 0.3s ease;
+        }
+
+        .essential-panel {
+            transition: all 0.3s ease;
+        }
+
+        .essential-btn {
+            transition: all 0.2s ease;
+        }
+
+        /* 保存用户偏好 */
+        .ui-preference-storage {
+            display: none;
+        }
+
+        .chart-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            cursor: crosshair;
+        }
+
+        .status-bar {
+            height: 22px;
+            background-color: var(--status-bar-bg);
+            color: white;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 11px;
+            justify-content: space-between;
+        }
+
+        /* Sub-waveform Styles */
+        .subwaveform-container {
+            /* 移除到上面统一定义 */
+        }
+
+        .subwaveform-toolbar {
+            height: 25px;
+            background-color: var(--panel-header-bg);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+        }
+
+        .subwaveform-chart-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            cursor: crosshair;
+            background-color: #1a1a1a;
+        }
+
+        #subwaveform-chart {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #subwaveform-tooltip {
+            position: absolute;
+            background-color: var(--panel-header-bg);
+            color: var(--text-highlight);
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            pointer-events: none;
+            display: none;
+            z-index: 1000;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Tooltip */
+        #tooltip {
+            position: absolute;
+            background: rgba(37, 37, 38, 0.9);
+            border: 1px solid var(--accent-color);
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 11px;
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+        }
+
+        
+        /* ROI 输入框样式 */
+        .roi-input {
+            background-color: var(--input-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            text-align: right;
+        }
+        .roi-input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 1px var(--accent-color);
+        }
+        .roi-input:invalid {
+            border-color: var(--error-color);
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+        <!-- 1.1 控制台面板 -->
+        <div class="panel">
+            <div class="panel-header">控制台</div>
+            <div class="panel-content">
+                <div class="status-row">
+                    <span>状态:</span>
+                    <span id="detection-state" style="color:var(--accent-color); font-weight:bold;">IDLE</span>
+                </div>
+                <div class="control-group">
+                    <button id="start-btn" class="essential-btn">开始检测</button>
+                    <button id="stop-btn" class="danger essential-btn" disabled>停止</button>
+                    <button id="pause-btn" class="hide-in-compact" disabled>暂停</button>
+                    <button id="resume-btn" class="hide-in-compact" disabled>恢复</button>
+                </div>
+                <button id="refresh-status-btn" class="hide-in-compact" style="width: 100%; margin-top: 5px;">刷新系统状态</button>
+            </div>
+        </div>
+
+        <!-- 1.2 波形截取面板 -->
+        <div class="panel">
+            <div class="panel-header">波形截取</div>
+            <div class="panel-content">
+                <!-- 数据源选择 -->
+                <div class="status-row hide-in-compact">
+                    <span>数据源:</span>
+                    <div>
+                        <label style="display: flex; align-items: center; gap: 8px;">
+                            <input type="radio" id="data-source-main" name="data-source" value="main">
+                            <span>主信号数据</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-left: 12px;">
+                            <input type="radio" id="data-source-roi" name="data-source" value="roi" checked>
+                            <span>ROI灰度数据</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 截取窗口大小设置 -->
+                <div class="range-slider-container hide-in-compact">
+                    <div class="status-row">
+                        <span>窗口大小</span>
+                        <span id="capture-window-size" class="status-value">100 帧</span>
+                    </div>
+                    <input type="range" id="capture-window-slider" min="50" max="200" step="10" value="100">
+                </div>
+
+                <!-- 数据生成频率设置 -->
+                <div class="range-slider-container hide-in-compact">
+                    <div class="status-row">
+                        <span>数据频率</span>
+                        <span id="data-fps-display" class="status-value">60 FPS</span>
+                    </div>
+                    <input type="range" id="data-fps-slider" min="10" max="120" step="5" value="60">
+                </div>
+
+                <!-- 截取状态指示 -->
+                <div class="status-row hide-in-compact">
+                    <span>截取状态:</span>
+                    <div>
+                        <span id="capture-status-indicator" class="indicator disconnected"></span>
+                        <span id="capture-status-text">等待截取</span>
+                    </div>
+                </div>
+
+                <!-- 截取按钮 -->
+                <button id="capture-btn" class="essential-btn" style="width: 100%; height: 35px; font-size: 14px; font-weight: 600; margin: 10px 0;">
+                    📸 立即截取
+                </button>
+
+                <!-- 波峰颜色指示器 -->
+                <div id="peak-indicator" style="display: none; text-align: center; margin: 5px 0; font-size: 14px; font-weight: 600;">
+                    <span id="peak-indicator-text" style="padding: 3px 8px; border-radius: 3px;"></span>
+                </div>
+
+                <!-- 截取信息显示 -->
+                <div id="capture-info" style="display: none;">
+                    <hr style="border: 1px solid var(--border-color); margin: 10px 0;">
+                    <div class="status-row">
+                        <span>数据类型:</span>
+                        <span id="captured-data-type" class="status-value">ROI灰度数据</span>
+                    </div>
+                    <div class="status-row">
+                        <span>截取帧数:</span>
+                        <span id="captured-frame-count" class="status-value">0</span>
+                    </div>
+                    <div class="status-row">
+                        <span>帧范围:</span>
+                        <span id="captured-frame-range" class="status-value">0-0</span>
+                    </div>
+                    <div class="status-row">
+                        <span>持续时间:</span>
+                        <span id="captured-duration" class="status-value">0.00s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3.3 ROI 图像显示 -->
+        <div class="panel essential-panel">
+            <div class="panel-header">ROI 监控</div>
+            <div class="panel-content" style="align-items: center;">
+                <canvas id="roi-canvas" width="200" height="150"></canvas>
+                <div class="status-row" style="width: 100%">
+                    <span>ROI 平均灰度:</span>
+                    <span id="roi-gray-value" class="status-value">0.0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3.4 ROI 设置面板 -->
+        <div class="panel hide-in-compact">
+            <div class="panel-header">ROI 设置</div>
+            <div class="panel-content">
+                <!-- ROI配置状态指示 -->
+                <div class="status-row">
+                    <span>配置状态:</span>
+                    <div>
+                        <span id="roi-status-indicator" class="indicator disconnected"></span>
+                        <span id="roi-status-text">未配置</span>
+                    </div>
+                </div>
+                <div class="status-row">
+                    <span>x1 坐标:</span>
+                    <input type="number" id="roi-x1" class="roi-input" value="0" min="0" style="width: 80px;">
+                </div>
+                <div class="status-row">
+                    <span>y1 坐标:</span>
+                    <input type="number" id="roi-y1" class="roi-input" value="0" min="0" style="width: 80px;">
+                </div>
+                <div class="status-row">
+                    <span>x2 坐标:</span>
+                    <input type="number" id="roi-x2" class="roi-input" value="200" min="0" style="width: 80px;">
+                </div>
+                <div class="status-row">
+                    <span>y2 坐标:</span>
+                    <input type="number" id="roi-y2" class="roi-input" value="150" min="0" style="width: 80px;">
+                </div>
+                <hr style="border: 1px solid var(--border-color); margin: 10px 0;">
+                <div class="status-row">
+                    <span>中心点:</span>
+                    <span id="roi-center" class="status-value">(100, 75)</span>
+                </div>
+                <div class="status-row">
+                    <span>宽度:</span>
+                    <span id="roi-width" class="status-value">200 px</span>
+                </div>
+                <div class="status-row">
+                    <span>高度:</span>
+                    <span id="roi-height" class="status-value">150 px</span>
+                </div>
+                <div class="status-row">
+                    <span>帧率设置:</span>
+                    <input type="number" id="roi-frame-rate" class="roi-input" value="2" min="1" max="60" style="width: 80px;">
+                    <span class="status-value" id="roi-fps-display">2 FPS</span>
+                </div>
+                <div class="control-group" style="margin-top: 10px;">
+                    <button id="apply-roi-btn" style="width: 100%; height: 30px; font-size: 12px;">应用配置</button>
+                </div>
+            </div>
+        </div>
+
+        
+        <!-- 3.6 波峰检测配置面板 -->
+        <div class="panel hide-in-compact">
+            <div class="panel-header">波峰检测设置</div>
+            <div class="panel-content">
+                <!-- 绝对阈值 -->
+                <div class="status-row">
+                    <span>绝对阈值:</span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" id="peak-threshold" class="roi-input" value="105" min="50" max="200" step="0.1" style="width: 80px;">
+                        <span class="status-value">灰度值 ≥ 阈值触发波峰</span>
+                    </div>
+                </div>
+
+                <!-- 边界扩展帧数 -->
+                <div class="status-row">
+                    <span>边界扩展:</span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" id="peak-margin-frames" class="roi-input" value="5" min="1" max="20" style="width: 80px;">
+                        <span class="status-value">波峰区域前后扩展帧数</span>
+                    </div>
+                </div>
+
+                <!-- 颜色分类阈值 -->
+                <div class="status-row">
+                    <span>分类阈值:</span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" id="peak-difference-threshold" class="roi-input" value="2.1" min="0.1" max="10" step="0.1" style="width: 80px;">
+                        <span class="status-value">
+                            <span style="color: #4ec9b0;">🟢</span> 差值>阈值
+                            <span style="color: #f44747;">🔴</span> 差值≤阈值
+                        </span>
+                    </div>
+                </div>
+
+                <!-- 最小区域长度 -->
+                <div class="status-row">
+                    <span>最小区域:</span>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" id="peak-min-region-length" class="roi-input" value="3" min="1" max="20" style="width: 80px;">
+                        <span class="status-value">最小波峰区域长度（帧）</span>
+                    </div>
+                </div>
+
+                <hr style="border: 1px solid var(--border-color); margin: 10px 0;">
+
+                <!-- 波峰检测状态 -->
+                <div class="status-row">
+                    <span>检测状态:</span>
+                    <div>
+                        <span id="peak-status-indicator" class="indicator disconnected"></span>
+                        <span id="peak-status-text">未激活</span>
+                    </div>
+                </div>
+
+                <div class="status-row">
+                    <span>当前颜色:</span>
+                    <div id="current-peak-color" style="display: flex; align-items: center; gap: 5px;">
+                        <span class="status-value">-</span>
+                    </div>
+                </div>
+
+                <div class="control-group" style="margin-top: 10px;">
+                    <button id="apply-peak-config-btn" style="width: 100%; height: 30px; font-size: 12px;">应用波峰配置</button>
+                </div>
+            </div>
+        </div>
+
+      
+        <!-- 系统状态面板 - 已隐藏 -->
+        <div class="panel" style="display: none;">
+            <div class="panel-header">系统状态</div>
+            <div class="panel-content" style="display: none;">
+                <div class="status-row">
+                    <span>连接状态</span>
+                    <div>
+                        <span id="connection-indicator" class="indicator disconnected"></span>
+                        <span id="connection-text">Disconnected</span>
+                    </div>
+                </div>
+                <div class="status-row">
+                    <span>帧数计数</span>
+                    <span id="frame-count" class="status-value">0</span>
+                </div>
+                <div class="status-row">
+                    <span>当前值</span>
+                    <span id="current-value" class="status-value">0.00</span>
+                </div>
+                <div class="status-row">
+                    <span>基线值</span>
+                    <span id="baseline-value" class="status-value">0.00</span>
+                </div>
+                   <div class="status-row">
+                    <span>缓冲区</span>
+                    <span id="buffer-size" class="status-value">0</span>
+                </div>
+                <div class="status-row">
+                    <span>FPS</span>
+                    <span id="update-rate" class="status-value">0 Hz</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 显示控制面板 - 已隐藏 -->
+        <div class="panel" style="display: none;">
+            <div class="panel-header">显示控制</div>
+            <div class="panel-content" style="display: none;">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="show-grid" checked>
+                    <div class="slider"></div>
+                    <span>显示网格</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="show-baseline" checked>
+                    <div class="slider"></div>
+                    <span>显示基线</span>
+                </label>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="show-points" checked>
+                    <div class="slider"></div>
+                    <span>显示数据点</span>
+                </label>
+
+                <!-- Y轴已固定为0-200范围，不可调节 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div class="main-content">
+        <div class="chart-toolbar">
+            <span class="toolbar-title hide-in-compact" style="font-weight: 600; font-size: 12px;">实时灰度波形图 (Real-time Waveform)</span>
+            <div class="toolbar-controls">
+                <button id="ui-toggle-btn" class="ui-toggle-btn essential-btn" title="切换UI模式">
+                    <span id="ui-toggle-text">缩小</span>
+                </button>
+            </div>
+        </div>
+        
+        <div class="chart-container" id="chart-container">
+            <canvas id="waveform-chart"></canvas>
+            <div id="tooltip"></div>
+        </div>
+
+        <!-- 子波形显示区域 -->
+        <div class="subwaveform-container" id="subwaveform-container" style="display: none;">
+            <div class="subwaveform-toolbar">
+                <span style="font-weight: 600; font-size: 12px;">截取波形 (Captured Waveform)</span>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="clear-subwaveform-btn" style="height: 20px; font-size: 10px; padding: 0 8px;">清除</button>
+                    <span id="subwaveform-info" style="font-size: 10px; color: var(--text-highlight);"></span>
+                </div>
+            </div>
+            <div class="subwaveform-chart-container">
+                <canvas id="subwaveform-chart"></canvas>
+                <div id="subwaveform-tooltip"></div>
+            </div>
+        </div>
+
+        <div class="status-bar">
+            <span id="chart-status">Ready</span>
+            <span id="last-update">Last Update: --:--:--</span>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        /**
+         * 1. 全局状态管理 (appState)
+         * 对应需求 4.1
+         */
+        const appState = {
+            connected: false,
+            serverUrl: 'http://localhost:8421', // 实际环境地址
+            chartData: [],         // 格式: {t: number, value: number}[]
+            roiData: null,
+            frameCount: 0,
+            currentValue: 0,
+              baseline: 120,
+            updateRate: 20,
+            detectionState: 'IDLE', // IDLE, RUNNING, PAUSED, STOPPED
+            chartState: {
+                showGrid: true,
+                showBaseline: true,
+                showPoints: true,
+                zoom: 1.0, // 固定为1.0，Y轴不可缩放，确保0-200范围固定
+                offsetY: 0
+            },
+            // ROI配置状态
+            roiConfig: {
+                x1: 0,
+                y1: 0,
+                x2: 200,
+                y2: 150,
+                center_x: 100,
+                center_y: 75,
+                width: 200,
+                height: 150
+            },
+            roiConfigured: false,  // ROI是否已由用户配置
+            // ROI更新频率控制
+            roiUpdateInterval: 500,  // ROI更新间隔（毫秒）
+            lastRoiUpdate: 0,        // 上次ROI更新时间
+            roiFrameRate: 2,         // ROI帧率（FPS）
+            // 数据生成频率控制
+            dataFps: 60,             // 数据生成频率（FPS）
+            // 波峰检测配置
+            peakConfig: {
+                threshold: 105.0,
+                margin_frames: 5,
+                difference_threshold: 2.1,
+                min_region_length: 3
+            },
+            // 内部使用的配置
+            maxDataPoints: 100,
+            pollingIntervals: {
+                realtime: null,
+                status: null
+            },
+            // UI模式控制
+            uiMode: 'expanded' // 'expanded' 或 'compact'
+        };
+
+  
+        /**
+         * 3. API通信层 (API Service)
+         */
+        const ApiService = {
+            async fetchRealtimeData() {
+                try {
+                    // 根据ROI配置状态决定请求数据量
+                    const count = appState.roiConfigured ? 1 : 5;
+                    const response = await fetch(`${appState.serverUrl}/data/realtime?count=${count}`);
+                    if(!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Fetch Error", e);
+                    return null;
+                }
+            },
+
+            async sendControl(command) {
+                  const formData = new URLSearchParams();
+                formData.append('command', command);
+                formData.append('password', '31415'); // 硬编码密码
+
+                try {
+                    const response = await fetch(`${appState.serverUrl}/control`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                    return await response.json();
+                } catch(e) {
+                    return { status: 'error' };
+                }
+            },
+
+            // ROI相关API
+            async getRoiConfig() {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/roi/config`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Get ROI config error:", e);
+                    return null;
+                }
+            },
+
+            async setRoiConfig(x1, y1, x2, y2) {
+                const formData = new URLSearchParams();
+                formData.append('x1', x1);
+                formData.append('y1', y1);
+                formData.append('x2', x2);
+                formData.append('y2', y2);
+                formData.append('password', '31415');
+
+                try {
+                    const response = await fetch(`${appState.serverUrl}/roi/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Set ROI config error:", e);
+                    return { success: false, error: String(e) };
+                }
+            },
+
+            async getRoiFrameRate() {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/roi/frame-rate`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Get ROI frame rate error:", e);
+                    return null;
+                }
+            },
+
+            async setRoiFrameRate(frameRate) {
+                const formData = new URLSearchParams();
+                formData.append('frame_rate', frameRate);
+                formData.append('password', '31415');
+
+                try {
+                    const response = await fetch(`${appState.serverUrl}/roi/frame-rate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Set ROI frame rate error:", e);
+                    return { success: false, error: String(e) };
+                }
+            },
+
+            // 数据生成频率API
+            async getDataFps() {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/data/fps`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Get data FPS error:", e);
+                    return { success: false, error: String(e) };
+                }
+            },
+
+            async setDataFps(fps) {
+                const formData = new URLSearchParams();
+                formData.append('fps', fps);
+                formData.append('password', '31415');
+
+                try {
+                    const response = await fetch(`${appState.serverUrl}/data/fps`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Set data FPS error:", e);
+                    return { success: false, error: String(e) };
+                }
+            },
+
+            // 波峰检测配置API
+            async getPeakDetectionConfig() {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/peak-detection/config`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Get peak detection config error:", e);
+                    return { success: false, error: e.message };
+                }
+            },
+
+            async setPeakDetectionConfig(config) {
+                const formData = new URLSearchParams();
+                if (config.threshold !== undefined) formData.append('threshold', config.threshold);
+                if (config.margin_frames !== undefined) formData.append('margin_frames', config.margin_frames);
+                if (config.difference_threshold !== undefined) formData.append('difference_threshold', config.difference_threshold);
+                if (config.min_region_length !== undefined) formData.append('min_region_length', config.min_region_length);
+                formData.append('password', '31415');
+
+                try {
+                    const response = await fetch(`${appState.serverUrl}/peak-detection/config`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Set peak detection config error:", e);
+                    return { success: false, error: e.message };
+                }
+            },
+
+            // 窗口截取API
+            async captureWindow(count = 100) {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/data/window-capture?count=${count}`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("Window capture error:", e);
+                    return { success: false, error: e.message };
+                }
+            },
+
+            // ROI窗口截取API
+            async captureRoiWindow(count = 100) {
+                try {
+                    const response = await fetch(`${appState.serverUrl}/data/roi-window-capture?count=${count}`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    return await response.json();
+                } catch(e) {
+                    console.error("ROI window capture error:", e);
+                    return { success: false, error: e.message };
+                }
+            },
+
+            // ROI窗口截取带波峰检测API
+            async captureRoiWindowWithPeaks(count = 100, threshold = null, marginFrames = null, differenceThreshold = null) {
+                try {
+                    const url = `${appState.serverUrl}/data/roi-window-capture-with-peaks?count=${count}&threshold=${threshold}&margin_frames=${marginFrames}&difference_threshold=${differenceThreshold}`;
+                    console.log(`🔍 请求ROI窗口波峰检测: ${url}`);
+                    const response = await fetch(url);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    const data = await response.json();
+                    console.log('📊 ROI窗口波峰检测响应:', data);
+
+                    // 打印波峰检测结果到控制台
+                    if (data.peak_detection_results) {
+                        console.log('\n=== 🎯 ROI窗口波峰检测结果 ===');
+                        const results = data.peak_detection_results;
+                        if (results.error) {
+                            console.error('❌ 波峰检测失败:', results.error);
+                        } else {
+                            console.log(`✅ 检测完成 - 总计: ${results.total_peaks} 个波峰`);
+                            console.log(`🟢 绿色波峰 (稳定): ${results.green_peak_count} 个:`, results.green_peaks);
+                            console.log(`🔴 红色波峰 (不稳定): ${results.red_peak_count} 个:`, results.red_peaks);
+
+                            // 详细打印每个波峰信息
+                            if (results.green_peaks.length > 0) {
+                                console.log('🟢 绿色波峰详细信息:');
+                                results.green_peaks.forEach((peak, index) => {
+                                    console.log(`   ${index + 1}. 帧范围: ${peak[0]} - ${peak[1]} (持续 ${peak[1] - peak[0] + 1} 帧)`);
+                                });
+                            }
+
+                            if (results.red_peaks.length > 0) {
+                                console.log('🔴 红色波峰详细信息:');
+                                results.red_peaks.forEach((peak, index) => {
+                                    console.log(`   ${index + 1}. 帧范围: ${peak[0]} - ${peak[1]} (持续 ${peak[1] - peak[0] + 1} 帧)`);
+                                });
+                            }
+                        }
+                        console.log('=== 波峰检测结束 ===\n');
+                    }
+
+                    return data;
+                } catch(e) {
+                    console.error("ROI window capture with peaks error:", e);
+                    return { success: false, error: e.message };
+                }
+            }
+        };
+
+        /**
+         * 4. 渲染引擎 (Chart & ROI)
+         */
+        class WaveformChart {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.ctx = this.canvas.getContext('2d', { alpha: false }); // 优化性能
+                this.container = document.getElementById('chart-container');
+                this.tooltip = document.getElementById('tooltip');
+                
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+                
+                // 滚轮缩放已禁用 - Y轴固定为0-200范围，不可缩放
+                // 如果需要恢复缩放功能，请取消注释以下代码：
+                /*
+                this.canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const delta = Math.sign(e.deltaY) * -0.1;
+                    let newZoom = Math.max(0.5, Math.min(3.0, appState.chartState.zoom + delta));
+                    appState.chartState.zoom = parseFloat(newZoom.toFixed(1));
+                    document.getElementById('zoom-slider').value = appState.chartState.zoom;
+                    document.getElementById('zoom-value').innerText = appState.chartState.zoom + 'x';
+                    this.draw();
+                });
+                */
+
+                // 鼠标交互
+                this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+                this.canvas.addEventListener('mouseleave', () => { this.tooltip.style.display = 'none'; });
+            }
+
+            resize() {
+                const rect = this.container.getBoundingClientRect();
+                // 处理 DPI
+                const dpr = window.devicePixelRatio || 1;
+                this.canvas.width = rect.width * dpr;
+                this.canvas.height = rect.height * dpr;
+                this.ctx.scale(dpr, dpr);
+                this.canvas.style.width = `${rect.width}px`;
+                this.canvas.style.height = `${rect.height}px`;
+                this.width = rect.width;
+                this.height = rect.height;
+                this.draw();
+            }
+
+            draw() {
+                if (!this.ctx) return;
+                
+                const { width, height } = this;
+                const { showGrid, showBaseline, showPoints, zoom } = appState.chartState;
+                const data = appState.chartData;
+
+                // 1. 清空背景
+                this.ctx.fillStyle = '#1e1e1e';
+                this.ctx.fillRect(0, 0, width, height);
+
+                // Y轴 映射函数: 将 0-200 映射到 Canvas 高度
+                // 放大时围绕中心点 (100) 放大
+                const midY = height / 2;
+                const scaleY = (height / 200) * zoom;
+                const mapY = (val) => {
+                    // 限制数据值在0-200范围内，确保Y轴真正固定
+                    const clampedVal = Math.max(0, Math.min(200, val));
+                    return midY - (clampedVal - 100) * scaleY; // 翻转Y轴，大值在上方
+                };
+
+                // 2. 绘制网格和Y轴标签
+                if (showGrid) {
+                    this.ctx.strokeStyle = '#333';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.fillStyle = '#ccc'; // Y轴标签颜色
+                    this.ctx.font = '12px Consolas, monospace';
+                    this.ctx.beginPath();
+                    // 简单的水平网格 (0-200范围，每40格) + Y轴标签
+                    for (let v = 0; v <= 200; v += 40) {
+                        const y = mapY(v);
+                        this.ctx.moveTo(0, y);
+                        this.ctx.lineTo(width, y);
+
+                        // 绘制Y轴标签 (右侧也显示，更明显)
+                        this.ctx.fillText(v.toString(), 5, y + 4);
+                        this.ctx.fillText(v.toString(), width - 25, y + 4);
+                    }
+
+                    // 添加额外的Y轴标记线 (每20格一条虚线)
+                    this.ctx.strokeStyle = '#222';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.setLineDash([2, 3]);
+                    this.ctx.beginPath();
+                    for (let v = 20; v < 200; v += 20) {
+                        if (v % 40 !== 0) { // 跳过已经绘制的主线
+                            const y = mapY(v);
+                            this.ctx.moveTo(0, y);
+                            this.ctx.lineTo(width, y);
+                        }
+                    }
+                    this.ctx.stroke();
+                    this.ctx.setLineDash([]);
+
+                    // 简单的垂直网格
+                    this.ctx.strokeStyle = '#333';
+                    this.ctx.beginPath();
+                    const step = width / 10;
+                    for (let x = 0; x < width; x += step) {
+                        this.ctx.moveTo(x, 0);
+                        this.ctx.lineTo(x, height);
+                    }
+                    this.ctx.stroke();
+
+                    // 绘制Y轴标题
+                    this.ctx.fillStyle = '#888';
+                    this.ctx.font = '14px Consolas, monospace';
+                    this.ctx.fillText('Y轴: 0-200', width / 2 - 40, 20);
+                }
+
+                if (data.length === 0) return;
+
+                // X轴 步进
+                const stepX = width / (appState.maxDataPoints - 1);
+
+                // 3. 绘制基线
+                if (showBaseline) {
+                    const yBase = mapY(appState.baseline);
+                    this.ctx.strokeStyle = '#dcdcaa'; // VS Code Warning Color
+                    this.ctx.setLineDash([5, 5]);
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, yBase);
+                    this.ctx.lineTo(width, yBase);
+                    this.ctx.stroke();
+                    this.ctx.setLineDash([]);
+                }
+
+                // 4. 绘制波形
+                this.ctx.strokeStyle = '#4ec9b0'; // VS Code Success/Type Color
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                
+                data.forEach((pt, i) => {
+                    const x = i * stepX;
+                    const y = mapY(pt.value);
+                    if (i === 0) this.ctx.moveTo(x, y);
+                    else this.ctx.lineTo(x, y);
+                });
+                this.ctx.stroke();
+
+                // 5. 绘制数据点
+                if (showPoints) {
+                    this.ctx.fillStyle = '#fff';
+                    data.forEach((pt, i) => {
+                        const x = i * stepX;
+                        const y = mapY(pt.value);
+                        this.ctx.beginPath();
+                        this.ctx.arc(x, y, 2, 0, Math.PI * 2);
+                        this.ctx.fill();
+                    });
+                }
+            }
+
+            handleMouseMove(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                
+                const stepX = this.width / (appState.maxDataPoints - 1);
+                const index = Math.round(mouseX / stepX);
+
+                if (index >= 0 && index < appState.chartData.length) {
+                    const pt = appState.chartData[index];
+                    this.tooltip.style.display = 'block';
+                    this.tooltip.style.left = (e.clientX + 10) + 'px';
+                    this.tooltip.style.top = (e.clientY + 10) + 'px';
+                    this.tooltip.innerHTML = `T: ${pt.t.toFixed(2)}s<br>Val: ${pt.value.toFixed(1)}`;
+                } else {
+                    this.tooltip.style.display = 'none';
+                }
+            }
+        }
+
+        /**
+         * 波形截取功能类
+         */
+        class WaveformCapture {
+            constructor() {
+                this.capturedData = null;
+                this.captureSettings = {
+                    windowSize: 100,
+                    minSize: 50,
+                    maxSize: 200,
+                    dataSource: 'roi' // 默认使用 ROI 灰度数据
+                };
+
+                console.log('WaveformCapture: Initializing with settings', this.captureSettings);
+
+                this.initElements();
+                this.initEventListeners();
+                this.initSubWaveformChart();
+
+                // 确保初始显示正确
+                this.syncInitialDisplay();
+            }
+
+            syncInitialDisplay() {
+                // 确保滑块和显示文本初始状态正确
+                if (this.elements.windowSlider && this.elements.windowSize) {
+                    // 确保滑块值正确
+                    this.elements.windowSlider.value = this.captureSettings.windowSize;
+                    // 更新显示文本
+                    this.elements.windowSize.textContent = `${this.captureSettings.windowSize} 帧`;
+                    console.log(`WaveformCapture: Initial display synced to ${this.captureSettings.windowSize} frames`);
+                }
+            }
+
+            initElements() {
+                this.elements = {
+                    // 截取控制面板
+                    windowSlider: document.getElementById('capture-window-slider'),
+                    windowSize: document.getElementById('capture-window-size'),
+                    captureBtn: document.getElementById('capture-btn'),
+                    statusIndicator: document.getElementById('capture-status-indicator'),
+                    statusText: document.getElementById('capture-status-text'),
+
+                    // 数据源选择
+                    dataSourceMain: document.getElementById('data-source-main'),
+                    dataSourceRoi: document.getElementById('data-source-roi'),
+
+                    // 截取信息显示
+                    infoPanel: document.getElementById('capture-info'),
+                    frameCount: document.getElementById('captured-frame-count'),
+                    frameRange: document.getElementById('captured-frame-range'),
+                    duration: document.getElementById('captured-duration'),
+                    dataType: document.getElementById('captured-data-type'),
+
+                    // 子波形显示
+                    container: document.getElementById('subwaveform-container'),
+                    info: document.getElementById('subwaveform-info'),
+                    clearBtn: document.getElementById('clear-subwaveform-btn')
+                };
+
+                // 默认使用 ROI 作为截取数据源
+                if (this.elements.dataSourceMain && this.elements.dataSourceRoi) {
+                    this.elements.dataSourceMain.checked = false;
+                    this.elements.dataSourceRoi.checked = true;
+                }
+                if (this.elements.dataType) {
+                    this.elements.dataType.textContent = 'ROI灰度数据';
+                }
+            }
+
+            initEventListeners() {
+                // 验证元素是否正确获取
+                if (!this.elements.windowSlider) {
+                    console.error('WaveformCapture: Window slider element not found');
+                    return;
+                }
+                if (!this.elements.windowSize) {
+                    console.error('WaveformCapture: Window size display element not found');
+                    return;
+                }
+
+                console.log('WaveformCapture: Initializing event listeners');
+
+                // 窗口大小滑块
+                this.elements.windowSlider.addEventListener('input', (e) => {
+                    const newValue = parseInt(e.target.value);
+                    this.captureSettings.windowSize = newValue;
+                    this.elements.windowSize.textContent = `${newValue} 帧`;
+                    console.log(`WaveformCapture: Window size changed to ${newValue} frames`);
+                });
+
+                // 数据源选择
+                this.elements.dataSourceMain.addEventListener('change', () => {
+                    if (this.elements.dataSourceMain.checked) {
+                        this.captureSettings.dataSource = 'main';
+                        this.elements.dataType.textContent = '主信号数据';
+                        console.log('WaveformCapture: Data source changed to main signal data');
+                    }
+                });
+
+                this.elements.dataSourceRoi.addEventListener('change', () => {
+                    if (this.elements.dataSourceRoi.checked) {
+                        this.captureSettings.dataSource = 'roi';
+                        this.elements.dataType.textContent = 'ROI灰度数据';
+                        console.log('WaveformCapture: Data source changed to ROI gray data');
+                    }
+                });
+
+                // 截取按钮
+                this.elements.captureBtn.addEventListener('click', () => {
+                    this.captureWaveform();
+                });
+
+                // 清除按钮
+                this.elements.clearBtn.addEventListener('click', () => {
+                    this.clearCapture();
+                });
+
+                console.log('WaveformCapture: Event listeners initialized successfully');
+            }
+
+            initSubWaveformChart() {
+                // 创建子波形图表实例
+                this.subWaveformChart = new SubWaveformChart('subwaveform-chart');
+            }
+
+            updateStatus(status, text) {
+                this.elements.statusIndicator.className = `indicator ${status}`;
+                this.elements.statusText.textContent = text;
+            }
+
+            async captureWaveform() {
+                try {
+                    const dataSource = this.captureSettings.dataSource;
+
+                    // ROI 截取需要先完成 ROI 配置
+                    if (dataSource === 'roi' && !appState.roiConfigured) {
+                        alert('请先配置 ROI 区域并运行检测，再进行截取。');
+                        return;
+                    }
+
+                    this.updateStatus('connecting', '截取中...');
+                    this.elements.captureBtn.disabled = true;
+
+                    let response;
+                    if (dataSource === 'roi') {
+                        // 使用带波峰检测的ROI截取API
+                        console.log('🎯 开始ROI窗口截取并执行波峰检测...');
+                        const currentConfig = appState.peakConfig;
+                        response = await ApiService.captureRoiWindowWithPeaks(
+                            this.captureSettings.windowSize,
+                            currentConfig?.threshold || 105.0,  // 使用配置值
+                            currentConfig?.margin_frames || 5,      // 使用配置值
+                            currentConfig?.difference_threshold || 2.1     // 使用配置值
+                        );
+                    } else {
+                        response = await ApiService.captureWindow(this.captureSettings.windowSize);
+                    }
+
+                    if (response && response.success) {
+                        this.capturedData = response;
+                        this.displayCapturedData(response);
+
+                        // 根据数据源格式化时间序列数据
+                        let series = response.series;
+                        if (dataSource === 'roi') {
+                            // ROI数据使用 gray_value 字段
+                            series = response.series.map(pt => ({
+                                t: pt.t,
+                                value: pt.gray_value
+                            }));
+                        }
+
+                        this.showSubWaveform(series);
+                        this.updateStatus('connected', '截取成功');
+
+                        // 添加成功视觉反馈
+                        this.addSuccessFeedback();
+
+                        console.log(`${dataSource === 'roi' ? 'ROI' : '主信号'}数据截取成功:`, response);
+                    } else {
+                        throw new Error(response?.error || '截取失败');
+                    }
+                } catch (error) {
+                    console.error('波形截取失败:', error);
+                    this.updateStatus('disconnected', '截取失败');
+                    alert('波形截取失败: ' + error.message);
+                } finally {
+                    this.elements.captureBtn.disabled = false;
+                }
+            }
+
+            displayCapturedData(data) {
+                // 显示截取信息面板 - 添加动画
+                this.elements.infoPanel.style.display = 'block';
+                // 触发重排以应用动画
+                setTimeout(() => {
+                    this.elements.infoPanel.classList.add('show');
+                }, 10);
+
+                const dataSource = this.captureSettings.dataSource;
+
+                // 更新信息
+                this.elements.frameCount.textContent = data.series.length;
+
+                if (dataSource === 'roi') {
+                    // ROI数据特有的信息显示
+                    this.elements.frameRange.textContent = `ROI帧: ${data.roi_frame_range[0]}-${data.roi_frame_range[1]}`;
+                    const duration = data.capture_metadata?.capture_duration || 0;
+                    this.elements.duration.textContent = `${duration.toFixed(2)}s`;
+
+                    // ROI数据使用 gray_value 字段
+                    const values = data.series.map(pt => pt.gray_value);
+                    const minValue = Math.min(...values);
+                    const maxValue = Math.max(...values);
+                    const avgValue = values.reduce((a, b) => a + b, 0) / values.length;
+                    const valueRange = maxValue - minValue;
+
+                    // 基础信息文本
+                    let infoText = `${data.series.length} ROI帧 | ${duration.toFixed(2)}s | 灰度范围: ${minValue.toFixed(0)}-${maxValue.toFixed(0)}`;
+
+                    // 添加波峰检测信息
+                    if (data.peak_detection_results && !data.peak_detection_results.error) {
+                        const results = data.peak_detection_results;
+                        infoText += ` | 🎯波峰: ${results.total_peaks}个(🟢${results.green_peak_count} 🔴${results.red_peak_count})`;
+
+                        // 显示波峰颜色指示器
+                        this.updatePeakIndicator(results);
+                    } else {
+                        // 没有波峰检测结果时显示0
+                        this.updatePeakIndicator(null);
+                    }
+
+                    // 更新子波形信息，包含统计和波峰检测
+                    this.elements.info.textContent = infoText;
+
+                    console.log(`WaveformCapture: Displaying captured ROI data summary:`);
+                    console.log(`  - ROI Frames: ${data.series.length}`);
+                    console.log(`  - ROI Frame range: ${data.roi_frame_range[0]}-${data.roi_frame_range[1]}`);
+                    console.log(`  - Main Frame range: ${data.main_frame_range[0]}-${data.main_frame_range[1]}`);
+                    console.log(`  - Duration: ${duration.toFixed(2)}s`);
+                    console.log(`  - Gray value range: ${minValue.toFixed(1)} - ${maxValue.toFixed(1)} (span: ${valueRange.toFixed(1)})`);
+                    console.log(`  - Average gray value: ${avgValue.toFixed(1)}`);
+
+                    // 显示波峰检测结果
+                    if (data.peak_detection_results) {
+                        console.log(`  - 🎯 Peak Detection Results:`);
+                        if (data.peak_detection_results.error) {
+                            console.log(`    ❌ Error: ${data.peak_detection_results.error}`);
+                        } else {
+                            console.log(`    ✅ Total peaks: ${data.peak_detection_results.total_peaks}`);
+                            console.log(`    🟢 Green peaks (stable): ${data.peak_detection_results.green_peak_count}`);
+                            console.log(`    🔴 Red peaks (unstable): ${data.peak_detection_results.red_peak_count}`);
+                            console.log(`    📍 Green peak ranges:`, data.peak_detection_results.green_peaks);
+                            console.log(`    📍 Red peak ranges:`, data.peak_detection_results.red_peaks);
+                        }
+                    }
+
+                } else {
+                    // 主信号数据信息显示
+                    this.elements.frameRange.textContent = `${data.frame_range[0]}-${data.frame_range[1]}`;
+                    const duration = data.capture_metadata?.duration || 0;
+                    this.elements.duration.textContent = `${duration.toFixed(2)}s`;
+
+                    const values = data.series.map(pt => pt.value);
+                    const minValue = Math.min(...values);
+                    const maxValue = Math.max(...values);
+                    const avgValue = values.reduce((a, b) => a + b, 0) / values.length;
+                    const valueRange = maxValue - minValue;
+
+                    // 更新子波形信息，包含统计
+                    this.elements.info.textContent = `${data.series.length} 帧 | ${duration.toFixed(2)}s | 范围: ${minValue.toFixed(0)}-${maxValue.toFixed(0)}`;
+
+                    // 主信号数据没有波峰检测，显示0
+                    this.updatePeakIndicator(null);
+
+                    console.log(`WaveformCapture: Displaying captured main signal data summary:`);
+                    console.log(`  - Frames: ${data.series.length}`);
+                    console.log(`  - Duration: ${duration.toFixed(2)}s`);
+                    console.log(`  - Value range: ${minValue.toFixed(1)} - ${maxValue.toFixed(1)} (span: ${valueRange.toFixed(1)})`);
+                    console.log(`  - Average: ${avgValue.toFixed(1)}`);
+                    console.log(`  - Frame range: ${data.frame_range[0]}-${data.frame_range[1]}`);
+                }
+
+                // 检查数据变化是否足够
+                const values = dataSource === 'roi' ?
+                    data.series.map(pt => pt.gray_value) :
+                    data.series.map(pt => pt.value);
+
+                const minValue = Math.min(...values);
+                const maxValue = Math.max(...values);
+                const valueRange = maxValue - minValue;
+
+                if (valueRange < 5) {
+                    console.warn(`WaveformCapture: WARNING - Small value range (${valueRange.toFixed(1)}) may appear as a flat line!`);
+                } else if (valueRange < 20) {
+                    console.warn(`WaveformCapture: Small value range (${valueRange.toFixed(1)}) - may appear subtle`);
+                } else {
+                    console.log(`WaveformCapture: Good value range (${valueRange.toFixed(1)}) - should be clearly visible`);
+                }
+            }
+
+            showSubWaveform(series) {
+                if (!series || series.length === 0) {
+                    console.warn('WaveformCapture: No series data to show');
+                    return;
+                }
+
+                console.log(`WaveformCapture: Showing sub-waveform with ${series.length} points`);
+
+                // 显示容器
+                this.elements.container.style.display = 'flex';
+
+                // 设置数据
+                this.subWaveformChart.setData(series);
+
+                // 延迟显示动画，确保数据已经设置且容器已显示
+                setTimeout(() => {
+                    this.elements.container.classList.add('show');
+                    console.log('WaveformCapture: Sub-waveform container shown with animation');
+                }, 50);
+            }
+
+            clearCapture() {
+                this.capturedData = null;
+
+                // 移除动画类
+                this.elements.container.classList.remove('show');
+                this.elements.infoPanel.classList.remove('show');
+
+                // 延迟隐藏以完成动画
+                setTimeout(() => {
+                    this.elements.container.style.display = 'none';
+                    this.elements.infoPanel.style.display = 'none';
+                }, 300);
+
+                this.updateStatus('disconnected', '等待截取');
+            }
+
+            addSuccessFeedback() {
+                // 按钮成功动画
+                this.elements.captureBtn.classList.add('success');
+                setTimeout(() => {
+                    this.elements.captureBtn.classList.remove('success');
+                }, 1000);
+
+                // 震动反馈（如果支持）
+                if ('vibrate' in navigator) {
+                    navigator.vibrate(50); // 短震动50ms
+                }
+            }
+
+            updatePeakIndicator(peakResults) {
+                const indicatorElement = document.getElementById('peak-indicator');
+                const indicatorText = document.getElementById('peak-indicator-text');
+
+                if (!indicatorElement || !indicatorText) {
+                    return;
+                }
+
+                if (!peakResults || peakResults.error || peakResults.total_peaks === 0) {
+                    // 没有波峰或错误时显示0
+                    indicatorText.textContent = '0';
+                    indicatorText.style.backgroundColor = '#d32f2f'; // 红色
+                    indicatorText.style.color = 'white';
+                } else {
+                    // 检查距离截取点最近的波峰颜色
+                    // 截取点通常是数据的中间位置
+                    const capturePoint = Math.floor(this.captureSettings.windowSize / 2);
+
+                    let closestGreenDistance = Infinity;
+                    let closestRedDistance = Infinity;
+
+                    // 查找最近的绿色和红色波峰
+                    if (peakResults.green_peaks && peakResults.green_peaks.length > 0) {
+                        for (const [start, end] of peakResults.green_peaks) {
+                            const peakCenter = Math.floor((start + end) / 2);
+                            const distance = Math.abs(peakCenter - capturePoint);
+                            if (distance < closestGreenDistance) {
+                                closestGreenDistance = distance;
+                            }
+                        }
+                    }
+
+                    if (peakResults.red_peaks && peakResults.red_peaks.length > 0) {
+                        for (const [start, end] of peakResults.red_peaks) {
+                            const peakCenter = Math.floor((start + end) / 2);
+                            const distance = Math.abs(peakCenter - capturePoint);
+                            if (distance < closestRedDistance) {
+                                closestRedDistance = distance;
+                            }
+                        }
+                    }
+
+                    // 判断最近的波峰颜色
+                    if (closestGreenDistance < closestRedDistance) {
+                        // 最近的波峰是绿色，显示1
+                        indicatorText.textContent = '1';
+                        indicatorText.style.backgroundColor = '#4caf50'; // 绿色
+                        indicatorText.style.color = 'white';
+                    } else {
+                        // 最近的波峰是红色或没有波峰，显示0
+                        indicatorText.textContent = '0';
+                        indicatorText.style.backgroundColor = '#d32f2f'; // 红色
+                        indicatorText.style.color = 'white';
+                    }
+                }
+
+                // 显示指示器
+                indicatorElement.style.display = 'block';
+            }
+
+                    }
+
+        /**
+         * 子波形图表类（继承自WaveformChart，但独立渲染）
+         */
+        class SubWaveformChart {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.ctx = this.canvas.getContext('2d', { alpha: false });
+                this.container = document.querySelector('.subwaveform-chart-container');
+                this.tooltip = document.getElementById('subwaveform-tooltip');
+
+                this.data = [];
+                this.zoom = 1.0;
+                this.showGrid = true;
+                this.showBaseline = true;
+                this.showPoints = true;
+                this.baseline = 100;
+                this.isInitialized = false;
+                this.mouseEventsBound = false;
+
+                // 延迟初始化，等待容器显示
+                this.initWhenReady();
+                window.addEventListener('resize', () => this.resize());
+            }
+
+            initWhenReady() {
+                // 检查容器是否已经显示
+                const checkContainer = () => {
+                    if (this.container && this.container.offsetParent !== null) {
+                        // 容器已显示，进行初始化
+                        this.resize();
+                        this.isInitialized = true;
+
+                        // 绑定鼠标事件（只在容器显示后绑定一次）
+                        if (!this.mouseEventsBound) {
+                            this.bindMouseEvents();
+                            this.mouseEventsBound = true;
+                            console.log('SubWaveformChart mouse events bound successfully');
+                        }
+
+                        console.log('SubWaveformChart initialized successfully');
+                    } else {
+                        // 容器未显示，继续等待
+                        setTimeout(checkContainer, 100);
+                    }
+                };
+                checkContainer();
+            }
+
+            bindMouseEvents() {
+                // 绑定鼠标交互事件
+                this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+                this.canvas.addEventListener('mouseleave', () => {
+                    this.updateStatusBar('Ready');
+                });
+                console.log('SubWaveformChart: mouse events bound');
+            }
+
+            resize() {
+                if (!this.container) {
+                    console.warn('SubWaveformChart: container not found');
+                    return;
+                }
+
+                const rect = this.container.getBoundingClientRect();
+
+                // 检查容器是否有有效尺寸
+                if (rect.width <= 0 || rect.height <= 0) {
+                    console.warn('SubWaveformChart: container has invalid dimensions', rect);
+                    return;
+                }
+
+                const dpr = window.devicePixelRatio || 1;
+                this.canvas.width = rect.width * dpr;
+                this.canvas.height = rect.height * dpr;
+                this.ctx.scale(dpr, dpr);
+                this.canvas.style.width = `${rect.width}px`;
+                this.canvas.style.height = `${rect.height}px`;
+                this.width = rect.width;
+                this.height = rect.height;
+
+                console.log('SubWaveformChart resized to', rect.width, 'x', rect.height);
+                this.draw();
+            }
+
+            setData(series) {
+                // 数据验证
+                if (!series || !Array.isArray(series)) {
+                    console.error('SubWaveformChart: Invalid data provided', series);
+                    return;
+                }
+
+                if (series.length === 0) {
+                    console.warn('SubWaveformChart: Empty data array provided');
+                    this.data = [];
+                    return;
+                }
+
+                // 验证数据格式
+                const isValidData = series.every(pt =>
+                    pt && typeof pt === 'object' &&
+                    typeof pt.t === 'number' &&
+                    typeof pt.value === 'number'
+                );
+
+                if (!isValidData) {
+                    console.error('SubWaveformChart: Invalid data format', series);
+                    return;
+                }
+
+                this.data = series;
+
+                // 计算统计信息
+                const values = series.map(pt => pt.value);
+                const minValue = Math.min(...values);
+                const maxValue = Math.max(...values);
+                const avgValue = values.reduce((a, b) => a + b, 0) / values.length;
+                this.baseline = avgValue;
+
+                console.log(`SubWaveformChart: Set data with detailed statistics:`);
+                console.log(`  - Points: ${series.length}`);
+                console.log(`  - Time range: ${series[0].t.toFixed(2)}s - ${series[series.length-1].t.toFixed(2)}s`);
+                console.log(`  - Value range: ${minValue.toFixed(2)} - ${maxValue.toFixed(2)} (span: ${(maxValue-minValue).toFixed(2)})`);
+                console.log(`  - Baseline: ${this.baseline.toFixed(2)}`);
+                console.log(`  - First 5 values:`, values.slice(0, 5).map(v => v.toFixed(1)));
+                console.log(`  - Sample values at positions:`,
+                    [0, Math.floor(series.length/4), Math.floor(series.length/2), Math.floor(3*series.length/4), series.length-1]
+                    .map(i => `${i}:${values[i].toFixed(1)}`).join(', '));
+
+                // 如果已初始化，立即重绘
+                if (this.isInitialized) {
+                    this.draw();
+                }
+            }
+
+            draw() {
+                if (!this.ctx) {
+                    console.error('SubWaveformChart: Canvas context not available');
+                    return;
+                }
+
+                if (!this.isInitialized) {
+                    console.warn('SubWaveformChart: Not yet initialized, skipping draw');
+                    return;
+                }
+
+                if (this.data.length === 0) {
+                    console.warn('SubWaveformChart: No data to draw');
+                    return;
+                }
+
+                if (!this.width || !this.height || this.width <= 0 || this.height <= 0) {
+                    console.warn('SubWaveformChart: Invalid canvas dimensions', this.width, this.height);
+                    return;
+                }
+
+                const { width, height } = this;
+
+                try {
+                    // 1. 清空背景
+                    this.ctx.fillStyle = '#1a1a1a';
+                    this.ctx.fillRect(0, 0, width, height);
+
+                    console.log(`SubWaveformChart: Starting to draw ${this.data.length} points on ${width}x${height} canvas`);
+                } catch (error) {
+                    console.error('SubWaveformChart: Error during drawing', error);
+                    return;
+                }
+
+                // 计算数据范围用于调试和自动缩放
+                const dataValues = this.data.map(pt => pt.value);
+                const dataMin = Math.min(...dataValues);
+                const dataMax = Math.max(...dataValues);
+                const dataRange = dataMax - dataMin;
+
+                // 固定Y轴映射 - 使用0-200范围
+                let midY = height / 2;
+                let scaleY = (height / 200) * this.zoom;
+                let mapY = (val) => {
+                    // 限制数据值在0-200范围内，确保Y轴真正固定
+                    const clampedVal = Math.max(0, Math.min(200, val));
+                    return midY - (clampedVal - 100) * scaleY;
+                };
+
+                console.log(`SubWaveformChart: Using fixed 0-200 mapping:`);
+                console.log(`  - Data range: ${dataRange.toFixed(2)}`);
+                console.log(`  - ScaleY: ${scaleY.toFixed(3)} (zoom: ${this.zoom})`);
+                console.log(`  - Data min ${dataMin.toFixed(1)} -> Y: ${mapY(dataMin).toFixed(1)}`);
+                console.log(`  - Data max ${dataMax.toFixed(1)} -> Y: ${mapY(dataMax).toFixed(1)}`);
+
+                console.log(`SubWaveformChart: Y-axis mapping debug:`);
+                console.log(`  - Canvas size: ${width}x${height}`);
+                console.log(`  - MidY: ${midY.toFixed(1)}`);
+                console.log(`  - ScaleY: ${scaleY.toFixed(3)} (zoom: ${this.zoom})`);
+                console.log(`  - Data range: ${dataMin.toFixed(1)} - ${dataMax.toFixed(1)} (span: ${dataRange.toFixed(1)})`);
+                console.log(`  - Y-mapping examples:`);
+                console.log(`    * Value 0 -> Y: ${mapY(0).toFixed(1)}`);
+                console.log(`    * Value 100 -> Y: ${mapY(100).toFixed(1)}`);
+                console.log(`    * Value 200 -> Y: ${mapY(200).toFixed(1)}`);
+                console.log(`    * Data min ${dataMin.toFixed(1)} -> Y: ${mapY(dataMin).toFixed(1)}`);
+                console.log(`    * Data max ${dataMax.toFixed(1)} -> Y: ${mapY(dataMax).toFixed(1)}`);
+                console.log(`    * Baseline ${this.baseline.toFixed(1)} -> Y: ${mapY(this.baseline).toFixed(1)}`);
+
+                // 检查映射是否合理
+                if (mapY(dataMin) < 0 || mapY(dataMin) > height || mapY(dataMax) < 0 || mapY(dataMax) > height) {
+                    console.warn(`SubWaveformChart: Y-mapping issue - data may be outside canvas bounds!`);
+                }
+
+                // 2. 绘制网格和Y轴标签
+                if (this.showGrid) {
+                    this.ctx.strokeStyle = '#333';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.fillStyle = '#ccc'; // Y轴标签颜色
+                    this.ctx.font = '12px Consolas, monospace';
+                    this.ctx.beginPath();
+                    // 水平网格 + Y轴标签
+                    for (let v = 0; v <= 200; v += 40) {
+                        const y = mapY(v);
+                        this.ctx.moveTo(0, y);
+                        this.ctx.lineTo(width, y);
+
+                        // 绘制Y轴标签
+                        this.ctx.fillText(v.toString(), 5, y + 4);
+                    }
+                    // 垂直网格
+                    const step = width / 10;
+                    for (let x = 0; x < width; x += step) {
+                        this.ctx.moveTo(x, 0);
+                        this.ctx.lineTo(x, height);
+                    }
+                    this.ctx.stroke();
+                }
+
+                // X轴 步进
+                const stepX = width / (this.data.length - 1);
+
+                // 3. 绘制基线
+                if (this.showBaseline) {
+                    const yBase = mapY(this.baseline);
+                    this.ctx.strokeStyle = '#dcdcaa';
+                    this.ctx.setLineDash([5, 5]);
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, yBase);
+                    this.ctx.lineTo(width, yBase);
+                    this.ctx.stroke();
+                    this.ctx.setLineDash([]);
+
+                    console.log(`SubWaveformChart: Baseline drawn at Y=${yBase.toFixed(1)} for value=${this.baseline.toFixed(2)}`);
+                }
+
+                // 4. 绘制波形
+                this.ctx.strokeStyle = '#4ec9b0';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+
+                let pointCount = 0;
+                let uniqueYValues = new Set();
+
+                this.data.forEach((pt, i) => {
+                    const x = i * stepX;
+                    const y = mapY(pt.value);
+
+                    // 收集调试信息
+                    uniqueYValues.add(y.toFixed(1));
+                    pointCount++;
+
+                    if (i === 0) {
+                        this.ctx.moveTo(x, y);
+                        console.log(`SubWaveformChart: Drawing from first point at (${x.toFixed(1)}, ${y.toFixed(1)}) value=${pt.value.toFixed(1)}`);
+                    } else {
+                        this.ctx.lineTo(x, y);
+                    }
+                });
+                this.ctx.stroke();
+
+                console.log(`SubWaveformChart: Waveform drawing completed:`);
+                console.log(`  - Points drawn: ${pointCount}`);
+                console.log(`  - Unique Y coordinates: ${uniqueYValues.size}`);
+                console.log(`  - X step: ${stepX.toFixed(3)}`);
+                console.log(`  - Sample drawing coordinates:`);
+
+                // 打印几个关键点的坐标
+                const sampleIndices = [0, Math.floor(this.data.length/4), Math.floor(this.data.length/2), Math.floor(3*this.data.length/4), this.data.length-1];
+                sampleIndices.forEach(i => {
+                    const pt = this.data[i];
+                    const x = i * stepX;
+                    const y = mapY(pt.value);
+                    console.log(`    Point ${i}: value=${pt.value.toFixed(1)} -> (${x.toFixed(1)}, ${y.toFixed(1)})`);
+                });
+
+                // 检查是否所有点都有相同的Y坐标（直线）
+                if (uniqueYValues.size === 1) {
+                    console.warn(`SubWaveformChart: WARNING - All points have the same Y coordinate! This explains why it looks like a straight line.`);
+                } else if (uniqueYValues.size < 5) {
+                    console.warn(`SubWaveformChart: WARNING - Very few unique Y coordinates (${uniqueYValues.size}). This may look like a straight line.`);
+                }
+
+                // 5. 绘制数据点
+                if (this.showPoints) {
+                    this.ctx.fillStyle = '#fff';
+                    this.data.forEach((pt, i) => {
+                        const x = i * stepX;
+                        const y = mapY(pt.value);
+                        this.ctx.beginPath();
+                        this.ctx.arc(x, y, 2, 0, Math.PI * 2);
+                        this.ctx.fill();
+                    });
+                    console.log(`SubWaveformChart: Drawn ${this.data.length} data points`);
+                }
+            }
+
+            handleMouseMove(e) {
+                // 验证必要的属性
+                if (!this.canvas || !this.data || this.data.length === 0) {
+                    return;
+                }
+
+                const rect = this.canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+
+                // 防止除零错误
+                if (this.data.length <= 1 || this.width <= 0) {
+                    this.updateStatusBar('');
+                    return;
+                }
+
+                const stepX = this.width / (this.data.length - 1);
+                const index = Math.floor(mouseX / stepX);
+
+                if (index >= 0 && index < this.data.length) {
+                    const pt = this.data[index];
+                    const baselineDiff = pt.value - this.baseline;
+                    const relativePos = (index / (this.data.length - 1)) * 100;
+
+                    // 在底部状态栏显示数值信息
+                    const valueColor = pt.value > this.baseline ? '#4ec9b0' : '#f44747';
+                    const diffColor = baselineDiff > 0 ? '#4ec9b0' : '#f44747';
+
+                    const statusText = `截取波形 | 索引: ${index} | 时间: ${pt.t.toFixed(2)}s | 数值: ${pt.value.toFixed(1)} | 基线: ${this.baseline.toFixed(1)} | 差异: ${baselineDiff > 0 ? '+' : ''}${baselineDiff.toFixed(1)} | 位置: ${relativePos.toFixed(1)}%`;
+
+                    this.updateStatusBar(statusText);
+                } else {
+                    this.updateStatusBar('');
+                }
+            }
+
+            updateStatusBar(text) {
+                const chartStatusElement = document.getElementById('chart-status');
+                if (chartStatusElement) {
+                    chartStatusElement.textContent = text || 'Ready';
+                }
+        }
+
+        }
+
+        class RoiRenderer {
+            constructor(canvasId) {
+                this.canvas = document.getElementById(canvasId);
+                this.ctx = this.canvas.getContext('2d');
+
+                // 创建离屏Canvas用于双缓冲
+                this.offscreenCanvas = document.createElement('canvas');
+                this.offscreenCanvas.width = 200;
+                this.offscreenCanvas.height = 150;
+                this.offscreenCtx = this.offscreenCanvas.getContext('2d');
+
+                // 图像预加载
+                this.preloadedImage = null;
+                this.isLoading = false;
+            }
+
+            render(roiData) {
+                if (!roiData) {
+                    this.drawPlaceholder("ROI数据未初始化");
+                    return;
+                }
+
+               if (roiData.format === 'base64') {
+                    // 预加载图像，避免闪烁
+                    this.preloadAndRender(roiData.pixels);
+                } else if (roiData.pixels === 'roi_not_configured') {
+                    this.drawPlaceholder("请先配置ROI区域");
+                } else if (roiData.pixels === 'roi_capture_failed') {
+                    this.drawPlaceholder("ROI截图失败");
+                } else if (roiData.pixels === 'roi_capture_error') {
+                    this.drawPlaceholder("ROI截图错误");
+                } else {
+                    this.drawPlaceholder("ROI数据格式: " + roiData.pixels);
+                }
+            }
+
+            preloadAndRender(imageSrc) {
+                // 避免重复加载相同图像
+                if (this.preloadedImage && this.preloadedImage.src === imageSrc) {
+                    return;
+                }
+
+                if (this.isLoading) {
+                    return; // 如果正在加载，跳过
+                }
+
+                this.isLoading = true;
+                const img = new Image();
+
+                img.onload = () => {
+                    // 清空离屏Canvas
+                    this.offscreenCtx.clearRect(0, 0, 200, 150);
+                    // 绘制图像到离屏Canvas
+                    this.offscreenCtx.drawImage(img, 0, 0, 200, 150);
+                    // 一次性复制到主Canvas
+                    this.copyToMainCanvas();
+                    // 缓存图像
+                    this.preloadedImage = img;
+                    this.isLoading = false;
+                };
+
+                img.onerror = () => {
+                    this.isLoading = false;
+                    this.drawPlaceholder("图像加载失败");
+                };
+
+                img.src = imageSrc;
+            }
+
+            copyToMainCanvas() {
+                // 清空主Canvas
+                this.ctx.clearRect(0, 0, 200, 150);
+                // 一次性复制离屏Canvas内容到主Canvas
+                this.ctx.drawImage(this.offscreenCanvas, 0, 0);
+            }
+
+            drawPlaceholder(message) {
+                // 直接在离屏Canvas上绘制
+                this.drawPlaceholderToCanvas(this.offscreenCtx, message);
+                // 复制到主Canvas
+                this.copyToMainCanvas();
+            }
+
+            drawPlaceholderToCanvas(ctx, message) {
+                // 绘制背景
+                ctx.fillStyle = '#2d2d30';
+                ctx.fillRect(0, 0, 200, 150);
+
+                // 绘制边框
+                ctx.strokeStyle = '#3e3e42';
+                ctx.strokeRect(0, 0, 200, 150);
+
+                // 绘制文字
+                ctx.fillStyle = '#cccccc';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                // 多行文字处理
+                const lines = message.split(' ');
+                const lineHeight = 20;
+                const startY = 75 - (lines.length - 1) * lineHeight / 2;
+
+                lines.forEach((line, index) => {
+                    ctx.fillText(line, 100, startY + index * lineHeight);
+                });
+            }
+        }
+
+        /**
+         * 5. 核心控制器 (Main Controller)
+         */
+        const chartRenderer = new WaveformChart('waveform-chart');
+        const roiRenderer = new RoiRenderer('roi-canvas');
+        const waveformCapture = new WaveformCapture();
+
+        
+        // 更新 UI 元素
+        function updateUI() {
+            // 连接状态
+            const connInd = document.getElementById('connection-indicator');
+            const connTxt = document.getElementById('connection-text');
+            if (appState.connected) {
+                connInd.className = 'indicator connected';
+                connTxt.innerText = 'Connected';
+            } else {
+                connInd.className = 'indicator disconnected';
+                connTxt.innerText = 'Disconnected';
+            }
+
+            // 数值面板
+            document.getElementById('frame-count').innerText = appState.frameCount;
+            document.getElementById('current-value').innerText = appState.currentValue.toFixed(2);
+            document.getElementById('baseline-value').innerText = appState.baseline.toFixed(2);
+            document.getElementById('buffer-size').innerText = appState.chartData.length;
+            
+  
+            // ROI配置状态
+            const roiStatusIndicator = document.getElementById('roi-status-indicator');
+            const roiStatusText = document.getElementById('roi-status-text');
+            if (appState.roiConfigured) {
+                roiStatusIndicator.className = 'indicator connected';
+                roiStatusText.innerText = '已配置';
+            } else {
+                roiStatusIndicator.className = 'indicator disconnected';
+                roiStatusText.innerText = '未配置';
+            }
+
+            // ROI数据
+            if (appState.roiData) {
+                document.getElementById('roi-gray-value').innerText = appState.roiData.gray_value.toFixed(2);
+            }
+
+            // 检测状态
+            document.getElementById('detection-state').innerText = appState.detectionState;
+
+            // 按钮状态
+            const isRunning = appState.detectionState === 'RUNNING';
+            const isPaused = appState.detectionState === 'PAUSED';
+            const isIdle = appState.detectionState === 'IDLE' || appState.detectionState === 'STOPPED';
+            const roiConfigured = appState.roiConfigured;
+
+            // 开始检测按钮：需要ROI已配置且不在运行状态
+            document.getElementById('start-btn').disabled = isRunning || !roiConfigured;
+            document.getElementById('stop-btn').disabled = isIdle;
+            document.getElementById('pause-btn').disabled = !isRunning;
+            document.getElementById('resume-btn').disabled = !isPaused;
+
+            // Update Time
+            const now = new Date();
+            document.getElementById('last-update').innerText = `Update: ${now.toLocaleTimeString()}`;
+        }
+
+        // 动态轮询间隔管理
+        function updatePollingInterval() {
+            const isRunning = appState.detectionState === 'RUNNING';
+            const isPaused = appState.detectionState === 'PAUSED';
+
+            // 清除当前轮询
+            if (appState.pollingIntervals.realtime) {
+                clearInterval(appState.pollingIntervals.realtime);
+                appState.pollingIntervals.realtime = null;
+            }
+
+            // 根据状态设置新的轮询间隔
+            if (isRunning || isPaused) {
+                // 运行或暂停状态：根据ROI帧率调整轮询频率
+                let pollingInterval;
+                if (appState.roiConfigured) {
+                    // ROI已配置：轮询间隔精确匹配ROI帧率
+                    pollingInterval = Math.floor(1000 / appState.roiFrameRate);
+                    const updateFreq = appState.roiFrameRate;
+                    document.getElementById('chart-status').innerText =
+                        `System Active | ROI: ${appState.roiFrameRate}FPS | Data: ${updateFreq} points/sec`;
+                } else {
+                    // ROI未配置：使用默认的高频率轮询模拟数据
+                    pollingInterval = 50; // 20 FPS
+                    document.getElementById('chart-status').innerText = "System Active | Simulated: 20FPS";
+                }
+                appState.pollingIntervals.realtime = setInterval(updateRealtimeData, pollingInterval);
+            } else {
+                // 停止状态：降低频率到2秒间隔
+                appState.pollingIntervals.realtime = setInterval(updateRealtimeData, 2000);
+                document.getElementById('chart-status').innerText = "System Stopped | Polling: 0.5FPS";
+            }
+        }
+
+        // 核心轮询循环
+        async function updateRealtimeData() {
+            if (!appState.connected) return;
+
+            // 根据检测状态决定是否进行轮询
+            const isRunning = appState.detectionState === 'RUNNING';
+            const isPaused = appState.detectionState === 'PAUSED';
+
+            // 如果系统停止，降低轮询频率或直接返回
+            if (!isRunning && !isPaused) {
+                console.log('System stopped, skipping realtime data request');
+                return;
+            }
+
+            const data = await ApiService.fetchRealtimeData();
+            if (data && data.type === 'realtime_data') {
+              // 更新全局数据
+                appState.frameCount = data.frame_count;
+                appState.baseline = data.baseline;
+
+                // 控制ROI更新频率 - 降低到2 FPS，减少闪烁
+                const now = Date.now();
+                if (now - appState.lastRoiUpdate > appState.roiUpdateInterval) {
+                    appState.roiData = data.roi_data;
+                    appState.lastRoiUpdate = now;
+                }
+
+                if (data.series && data.series.length > 0) {
+                    const latest = data.series[data.series.length - 1];
+                    appState.currentValue = latest.value;
+                    
+                    // 维护固定长度的图表数据队列
+                    data.series.forEach(pt => {
+                        appState.chartData.push(pt);
+                    });
+                    while (appState.chartData.length > appState.maxDataPoints) {
+                        appState.chartData.shift();
+                    }
+                }
+
+                // 更新波峰检测状态显示
+                if (data.enhanced_peak) {
+                    updatePeakDetectionStatus(data.enhanced_peak);
+                } else {
+                    updatePeakDetectionStatus(null);
+                }
+
+                // 渲染更新
+                chartRenderer.draw();
+                roiRenderer.render(data.roi_data);
+                updateUI();
+            }
+        }
+
+        // 状态机控制
+        async function handleControl(action) {
+            // 检查ROI配置状态（仅对开始检测）
+            if (action === 'start_detection' && !appState.roiConfigured) {
+                alert('请先配置ROI区域后再开始检测！');
+                return;
+            }
+
+            // 发送命令到服务器
+            const res = await ApiService.sendControl(action);
+            if (res.status !== 'success') {
+                alert('Command failed!');
+                // 保持原状态不变
+                updateUI();
+            } else {
+                // 命令成功，更新状态
+                let newState = appState.detectionState;
+                if (action === 'start_detection') newState = 'RUNNING';
+                if (action === 'stop_detection') newState = 'STOPPED';
+                if (action === 'pause_detection') newState = 'PAUSED';
+                if (action === 'resume_detection') newState = 'RUNNING';
+
+                appState.detectionState = newState;
+                updateUI();
+                updatePollingInterval();
+                console.log(`✅ Detection ${action.replace('_detection', '')} successfully, state updated to: ${newState}`);
+            }
+        }
+
+        // 连接逻辑
+        function initConnection() {
+            const ind = document.getElementById('connection-indicator');
+            const txt = document.getElementById('connection-text');
+            ind.className = 'indicator connecting';
+            txt.innerText = 'Connecting...';
+
+            setTimeout(async () => {
+                appState.connected = true;
+                updateUI();
+
+                // 加载ROI配置
+                await loadRoiConfig();
+
+                // 加载波峰检测配置
+                await loadPeakDetectionConfig();
+
+                // 加载数据生成频率配置
+                await loadDataFps();
+
+                // 初始化数据显示
+                updateDataFpsDisplay();
+
+                // 启动动态轮询
+                updatePollingInterval();
+            }, 1000);
+        }
+
+        /**
+         * 5. ROI相关函数
+         */
+        function updateRoiDisplay() {
+            // 获取输入值
+            const x1 = parseInt(document.getElementById('roi-x1').value) || 0;
+            const y1 = parseInt(document.getElementById('roi-y1').value) || 0;
+            const x2 = parseInt(document.getElementById('roi-x2').value) || 0;
+            const y2 = parseInt(document.getElementById('roi-y2').value) || 0;
+
+            // 计算中心点和尺寸
+            const centerX = Math.floor((x1 + x2) / 2);
+            const centerY = Math.floor((y1 + y2) / 2);
+            const width = Math.abs(x2 - x1);
+            const height = Math.abs(y2 - y1);
+
+            // 更新显示
+            document.getElementById('roi-center').textContent = `(${centerX}, ${centerY})`;
+            document.getElementById('roi-width').textContent = `${width} px`;
+            document.getElementById('roi-height').textContent = `${height} px`;
+        }
+
+        // 保存配置到localStorage
+        function saveConfiguration() {
+            // 保存ROI配置
+            const roiConfig = {
+                x1: parseInt(document.getElementById('roi-x1').value) || 0,
+                y1: parseInt(document.getElementById('roi-y1').value) || 0,
+                x2: parseInt(document.getElementById('roi-x2').value) || 0,
+                y2: parseInt(document.getElementById('roi-y2').value) || 0,
+                frameRate: parseInt(document.getElementById('roi-frame-rate').value) || 2,
+                lastUpdated: new Date().toISOString()
+            };
+            localStorage.setItem('newfem_roi_config', JSON.stringify(roiConfig));
+
+            // 保存波峰检测配置（使用现有的函数）
+            const peakConfig = {
+                threshold: parseFloat(document.getElementById('peak-threshold').value) || 105.0,
+                margin_frames: parseInt(document.getElementById('peak-margin-frames').value) || 5,
+                difference_threshold: parseFloat(document.getElementById('peak-difference-threshold').value) || 2.1,
+                min_region_length: parseInt(document.getElementById('peak-min-region-length').value) || 3
+            };
+            savePeakDetectionConfigToLocalStorage(peakConfig);
+
+            console.log('Configuration saved to localStorage');
+        }
+
+        // 从localStorage加载ROI配置
+        function loadRoiConfigFromStorage() {
+            const savedConfig = localStorage.getItem('newfem_roi_config');
+            if (savedConfig) {
+                try {
+                    const config = JSON.parse(savedConfig);
+                    return config;
+                } catch (e) {
+                    console.warn('Failed to parse saved ROI configuration:', e);
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        // 应用保存的配置到界面
+        function applySavedConfigToUI() {
+            // 加载并应用ROI配置
+            const roiConfig = loadRoiConfigFromStorage();
+            if (roiConfig) {
+                document.getElementById('roi-x1').value = roiConfig.x1;
+                document.getElementById('roi-y1').value = roiConfig.y1;
+                document.getElementById('roi-x2').value = roiConfig.x2;
+                document.getElementById('roi-y2').value = roiConfig.y2;
+                document.getElementById('roi-frame-rate').value = roiConfig.frameRate;
+                updateRoiDisplay();
+                updateRoiFrameRateDisplay();
+                console.log('ROI configuration loaded from localStorage:', roiConfig);
+            }
+
+            // 加载并应用波峰检测配置（使用现有的函数）
+            const peakConfig = loadPeakDetectionConfigFromLocalStorage();
+            if (peakConfig) {
+                document.getElementById('peak-threshold').value = peakConfig.threshold;
+                document.getElementById('peak-margin-frames').value = peakConfig.margin_frames;
+                document.getElementById('peak-difference-threshold').value = peakConfig.difference_threshold;
+                document.getElementById('peak-min-region-length').value = peakConfig.min_region_length;
+                console.log('Peak detection configuration loaded from localStorage:', peakConfig);
+            }
+
+            // 返回是否有任何配置被加载
+            return roiConfig || peakConfig;
+        }
+
+        async function applyRoiConfig() {
+            try {
+                const x1 = parseInt(document.getElementById('roi-x1').value) || 0;
+                const y1 = parseInt(document.getElementById('roi-y1').value) || 0;
+                const x2 = parseInt(document.getElementById('roi-x2').value) || 0;
+                const y2 = parseInt(document.getElementById('roi-y2').value) || 0;
+                const frameRate = parseInt(document.getElementById('roi-frame-rate').value) || 2;
+
+                // 基本验证
+                if (x1 >= x2 || y1 >= y2) {
+                    alert('ROI坐标无效：x1必须小于x2，y1必须小于y2');
+                    return;
+                }
+
+                if (x2 - x1 < 10 || y2 - y1 < 10) {
+                    alert('ROI尺寸太小：最小尺寸为10x10像素');
+                    return;
+                }
+
+                if (frameRate < 1 || frameRate > 60) {
+                    alert('帧率无效：必须在1-60之间');
+                    return;
+                }
+
+                // 同时应用ROI配置和帧率设置
+                const [roiResponse, frameRateResponse] = await Promise.all([
+                    ApiService.setRoiConfig(x1, y1, x2, y2),
+                    ApiService.setRoiFrameRate(frameRate)
+                ]);
+
+                // 检查ROI配置结果
+                if (roiResponse && roiResponse.success) {
+                    // 更新本地状态
+                    appState.roiConfig = roiResponse.config;
+                    appState.roiConfigured = true;
+                    console.log('ROI配置应用成功:', roiResponse.config);
+                } else {
+                    alert('ROI配置应用失败: ' + (roiResponse?.error || '未知错误'));
+                    return;
+                }
+
+                // 检查帧率设置结果
+                if (frameRateResponse && frameRateResponse.success) {
+                    console.log('ROI帧率设置成功:', frameRateResponse.frame_rate);
+                    // 更新应用状态
+                    appState.roiFrameRate = frameRate;
+                    appState.roiUpdateInterval = Math.floor(1000 / frameRate);
+                    updateRoiFrameRateDisplay();
+                } else {
+                    console.warn('ROI帧率设置失败: ' + (frameRateResponse?.error || '未知错误'));
+                }
+
+                // 配置已通过API保存到服务器JSON文件，无需保存到localStorage
+                if (roiResponse && roiResponse.success) {
+                    console.log('ROI配置已保存到服务器JSON文件');
+                }
+
+                updateUI();  // 更新UI状态
+            } catch (error) {
+                console.error('Apply ROI config error:', error);
+                alert('ROI配置应用失败: ' + error.message);
+            }
+        }
+
+  
+        async function loadDataFps() {
+            try {
+                const response = await ApiService.getDataFps();
+                if (response && response.success) {
+                    appState.dataFps = response.fps;
+                    // 更新UI显示
+                    document.getElementById('data-fps-slider').value = response.fps;
+                    updateDataFpsDisplay();
+                    console.log('Data FPS loaded from server:', response.fps);
+                } else {
+                    console.warn('Failed to load data FPS from server, using default');
+                }
+            } catch (error) {
+                console.error('Load data FPS error:', error);
+            }
+        }
+
+        async function loadRoiConfig() {
+            try {
+                const response = await ApiService.getRoiConfig();
+                if (response && response.success && response.config) {
+                    appState.roiConfig = response.config;
+                    // 如果配置不是默认值，则认为已配置
+                    const isDefaultConfig = (response.config.x1 === 0 && response.config.y1 === 0 &&
+                                            response.config.x2 === 200 && response.config.y2 === 150);
+                    appState.roiConfigured = !isDefaultConfig;
+
+                    // 更新UI输入框
+                    document.getElementById('roi-x1').value = response.config.x1;
+                    document.getElementById('roi-y1').value = response.config.y1;
+                    document.getElementById('roi-x2').value = response.config.x2;
+                    document.getElementById('roi-y2').value = response.config.y2;
+
+                    // 更新显示
+                    updateRoiDisplay();
+
+                    console.log('ROI配置加载成功:', response.config, '配置状态:', appState.roiConfigured);
+                }
+
+                // 加载ROI帧率设置
+                await loadRoiFrameRate();
+            } catch (error) {
+                console.error('加载ROI配置失败:', error);
+            }
+        }
+
+        async function loadRoiFrameRate() {
+            try {
+                const response = await ApiService.getRoiFrameRate();
+                if (response && response.success) {
+                    document.getElementById('roi-frame-rate').value = response.frame_rate;
+                    document.getElementById('roi-fps-display').textContent = `${response.frame_rate} FPS`;
+                    // 更新应用状态
+                    appState.roiFrameRate = response.frame_rate;
+                    appState.roiUpdateInterval = Math.floor(1000 / response.frame_rate);
+                    console.log('ROI帧率加载成功:', response.frame_rate);
+                }
+            } catch (error) {
+                console.error('加载ROI帧率失败:', error);
+            }
+        }
+
+        /**
+         * 7. 波峰检测配置函数
+         */
+        function savePeakDetectionConfigToLocalStorage(config) {
+            try {
+                const data = {
+                    ...config,
+                    lastUpdated: new Date().toISOString()
+                };
+                localStorage.setItem('newfem_peak_detection_config', JSON.stringify(data));
+                console.log('Peak detection config saved to localStorage:', data);
+            } catch (error) {
+                console.warn('Failed to save peak detection config to localStorage:', error);
+            }
+        }
+
+        function loadPeakDetectionConfigFromLocalStorage() {
+            try {
+                const stored = localStorage.getItem('newfem_peak_detection_config');
+                if (stored) {
+                    const config = JSON.parse(stored);
+                    console.log('Peak detection config loaded from localStorage:', config);
+                    return config;
+                }
+                return null;
+            } catch (error) {
+                console.warn('Failed to load peak detection config from localStorage:', error);
+                return null;
+            }
+        }
+
+        async function loadPeakDetectionConfig() {
+            try {
+                // 首先尝试从localStorage加载配置
+                let localConfig = loadPeakDetectionConfigFromLocalStorage();
+
+                if (localConfig) {
+                    // 使用本地配置更新UI
+                    document.getElementById('peak-threshold').value = localConfig.threshold;
+                    document.getElementById('peak-margin-frames').value = localConfig.margin_frames;
+                    document.getElementById('peak-difference-threshold').value = localConfig.difference_threshold;
+                    document.getElementById('peak-min-region-length').value = localConfig.min_region_length;
+
+                    // 更新应用状态
+                    appState.peakConfig = {
+                        threshold: localConfig.threshold,
+                        margin_frames: localConfig.margin_frames,
+                        difference_threshold: localConfig.difference_threshold,
+                        min_region_length: localConfig.min_region_length
+                    };
+
+                    // 同时应用到后端以保持同步
+                    const backendResponse = await ApiService.setPeakDetectionConfig({
+                        threshold: localConfig.threshold,
+                        margin_frames: localConfig.margin_frames,
+                        difference_threshold: localConfig.difference_threshold,
+                        min_region_length: localConfig.min_region_length
+                    });
+
+                    if (backendResponse && backendResponse.success) {
+                        console.log('波峰检测配置从本地加载并同步到后端成功:', localConfig);
+                    } else {
+                        console.warn('波峰检测配置从本地加载但同步到后端失败:', backendResponse?.error);
+                    }
+                } else {
+                    // 本地无配置，从API加载默认配置
+                    const response = await ApiService.getPeakDetectionConfig();
+                    if (response && response.success) {
+                        // 更新UI输入框
+                        document.getElementById('peak-threshold').value = response.threshold;
+                        document.getElementById('peak-margin-frames').value = response.margin_frames;
+                        document.getElementById('peak-difference-threshold').value = response.difference_threshold;
+                        document.getElementById('peak-min-region-length').value = response.min_region_length;
+
+                        // 更新应用状态
+                        appState.peakConfig = {
+                            threshold: response.threshold,
+                            margin_frames: response.margin_frames,
+                            difference_threshold: response.difference_threshold,
+                            min_region_length: response.min_region_length
+                        };
+
+                        // 保存到localStorage供下次使用
+                        savePeakDetectionConfigToLocalStorage(appState.peakConfig);
+
+                        console.log('波峰检测配置从API加载成功:', response);
+                    }
+                }
+            } catch (error) {
+                console.error('加载波峰检测配置失败:', error);
+                // 发生错误时使用默认配置
+                const defaultConfig = appState.peakConfig;
+                document.getElementById('peak-threshold').value = defaultConfig.threshold;
+                document.getElementById('peak-margin-frames').value = defaultConfig.margin_frames;
+                document.getElementById('peak-difference-threshold').value = defaultConfig.difference_threshold;
+                document.getElementById('peak-min-region-length').value = defaultConfig.min_region_length;
+            }
+        }
+
+        async function applyPeakDetectionConfig() {
+            try {
+                // 只读取4个参数
+                const threshold = parseFloat(document.getElementById('peak-threshold').value) || 105.0;
+                const marginFrames = parseInt(document.getElementById('peak-margin-frames').value) || 5;
+                const differenceThreshold = parseFloat(document.getElementById('peak-difference-threshold').value) || 2.1;
+                const minRegionLength = parseInt(document.getElementById('peak-min-region-length').value) || 3;
+
+                // 基本参数验证
+                if (threshold < 50.0 || threshold > 200.0) {
+                    console.warn('绝对阈值超出范围：', threshold);
+                    return;
+                }
+
+                if (marginFrames < 1 || marginFrames > 20) {
+                    console.warn('边界扩展帧数超出范围：', marginFrames);
+                    return;
+                }
+
+                if (differenceThreshold < 0.1 || differenceThreshold > 10.0) {
+                    console.warn('颜色分类阈值超出范围：', differenceThreshold);
+                    return;
+                }
+
+                if (minRegionLength < 1 || minRegionLength > 20) {
+                    console.warn('最小区域长度超出范围：', minRegionLength);
+                    return;
+                }
+
+                // 通过API保存配置到服务器JSON文件
+                const response = await ApiService.setPeakDetectionConfig(
+                    threshold,
+                    marginFrames,
+                    differenceThreshold,
+                    minRegionLength
+                );
+
+                if (response && response.success) {
+                    console.log('波峰检测配置已保存到服务器JSON文件:', response);
+                    // 更新本地状态
+                    appState.peakConfig = {
+                        threshold: threshold,
+                        margin_frames: marginFrames,
+                        difference_threshold: differenceThreshold,
+                        min_region_length: minRegionLength
+                    };
+                } else {
+                    alert('波峰检测配置应用失败: ' + (response?.error || '未知错误'));
+                    return;
+                }
+
+            } catch (error) {
+                console.error('保存波峰检测配置失败:', error);
+            }
+        }
+
+        function updatePeakDetectionStatus(peakData) {
+            if (!peakData) {
+                document.getElementById('peak-status-indicator').className = 'indicator disconnected';
+                document.getElementById('peak-status-text').textContent = '未激活';
+                document.getElementById('current-peak-color').innerHTML = '<span class="status-value">-</span>';
+                return;
+            }
+
+            // 更新状态指示器
+            if (peakData.signal === 1) {
+                document.getElementById('peak-status-indicator').className = 'indicator running';
+                document.getElementById('peak-status-text').textContent = '检测到波峰';
+
+                // 更新颜色显示
+                if (peakData.color === 'green') {
+                    document.getElementById('current-peak-color').innerHTML =
+                        '<span style="color: #4ec9b0; font-weight: bold;">🟢 绿色波峰 (稳定)</span>';
+                } else if (peakData.color === 'red') {
+                    document.getElementById('current-peak-color').innerHTML =
+                        '<span style="color: #f44747; font-weight: bold;">🔴 红色波峰 (可能不稳定)</span>';
+                } else {
+                    document.getElementById('current-peak-color').innerHTML =
+                        '<span class="status-value">波峰 (颜色未知)</span>';
+                }
+            } else {
+                document.getElementById('peak-status-indicator').className = 'indicator connecting';
+                document.getElementById('peak-status-text').textContent = '监控中';
+                document.getElementById('current-peak-color').innerHTML = '<span class="status-value">-</span>';
+            }
+        }
+
+        function updateRoiFrameRateDisplay() {
+            const frameRate = parseInt(document.getElementById('roi-frame-rate').value) || 2;
+            document.getElementById('roi-fps-display').textContent = `${frameRate} FPS`;
+        }
+
+        async function applyRoiFrameRate() {
+            try {
+                const frameRate = parseInt(document.getElementById('roi-frame-rate').value) || 2;
+
+                // 验证帧率范围
+                if (frameRate < 1 || frameRate > 60) {
+                    alert('帧率无效：必须在1-60之间');
+                    return;
+                }
+
+                // 发送API请求
+                const response = await ApiService.setRoiFrameRate(frameRate);
+                if (response && response.success) {
+                    console.log('ROI帧率设置成功:', response.frame_rate);
+                    // 更新应用状态
+                    appState.roiFrameRate = frameRate;
+                    appState.roiUpdateInterval = Math.floor(1000 / frameRate);
+                    // 更新显示
+                    updateRoiFrameRateDisplay();
+                    // 如果系统正在运行，重新设置轮询间隔以应用新的帧率
+                    if (appState.detectionState === 'RUNNING' || appState.detectionState === 'PAUSED') {
+                        updatePollingInterval();
+                    }
+                } else {
+                    alert('ROI帧率设置失败: ' + (response.error || '未知错误'));
+                }
+            } catch (error) {
+                console.error('Apply ROI frame rate error:', error);
+                alert('ROI帧率设置失败: ' + error.message);
+            }
+        }
+
+        function updateDataFpsDisplay() {
+            const fps = parseInt(document.getElementById('data-fps-slider').value) || 60;
+            document.getElementById('data-fps-display').textContent = `${fps} FPS`;
+        }
+
+        async function applyDataFps() {
+            try {
+                const fps = parseInt(document.getElementById('data-fps-slider').value) || 60;
+
+                // 验证FPS范围
+                if (fps < 10 || fps > 120) {
+                    alert('数据频率无效：必须在10-120之间');
+                    return;
+                }
+
+                // 发送API请求
+                const response = await ApiService.setDataFps(fps);
+                if (response && response.success) {
+                    console.log('数据频率设置成功:', response.fps);
+                    // 更新应用状态
+                    appState.dataFps = fps;
+                    // 更新显示
+                    updateDataFpsDisplay();
+                } else {
+                    alert('数据频率设置失败: ' + (response.error || '未知错误'));
+                }
+            } catch (error) {
+                console.error('Apply data FPS error:', error);
+                alert('数据频率设置失败: ' + error.message);
+            }
+        }
+
+        /**
+         * 6. 事件绑定
+         */
+        document.addEventListener('DOMContentLoaded', () => {
+            // 显示控制
+            document.getElementById('show-grid').addEventListener('change', (e) => {
+                appState.chartState.showGrid = e.target.checked;
+                chartRenderer.draw();
+            });
+            document.getElementById('show-baseline').addEventListener('change', (e) => {
+                appState.chartState.showBaseline = e.target.checked;
+                chartRenderer.draw();
+            });
+            document.getElementById('show-points').addEventListener('change', (e) => {
+                appState.chartState.showPoints = e.target.checked;
+                chartRenderer.draw();
+            });
+            
+            // Y轴缩放已移除 - 固定为1.0x，确保Y轴范围始终为0-200
+            // 如果需要恢复缩放功能，请取消注释以下代码：
+            /*
+            const zoomSlider = document.getElementById('zoom-slider');
+            const zoomVal = document.getElementById('zoom-value');
+            zoomSlider.addEventListener('input', (e) => {
+                const val = parseFloat(e.target.value);
+                appState.chartState.zoom = val;
+                zoomVal.innerText = val + 'x';
+                chartRenderer.draw();
+            });
+            */
+
+            // 检测控制
+            document.getElementById('start-btn').addEventListener('click', () => handleControl('start_detection'));
+            document.getElementById('stop-btn').addEventListener('click', () => handleControl('stop_detection'));
+            document.getElementById('pause-btn').addEventListener('click', () => handleControl('pause_detection'));
+            document.getElementById('resume-btn').addEventListener('click', () => handleControl('resume_detection'));
+
+            // ROI设置控制
+            const roiInputs = ['roi-x1', 'roi-y1', 'roi-x2', 'roi-y2'];
+            roiInputs.forEach(id => {
+                document.getElementById(id).addEventListener('input', updateRoiDisplay);
+                // 添加配置自动保存
+                document.getElementById(id).addEventListener('change', () => {
+                    console.log('ROI configuration changed, auto-saving...');
+                    saveConfiguration();
+                });
+            });
+
+            document.getElementById('apply-roi-btn').addEventListener('click', applyRoiConfig);
+
+            // ROI帧率控制
+            document.getElementById('roi-frame-rate').addEventListener('input', updateRoiFrameRateDisplay);
+            document.getElementById('roi-frame-rate').addEventListener('change', applyRoiFrameRate);
+            // 添加帧率配置自动保存
+            document.getElementById('roi-frame-rate').addEventListener('change', () => {
+                console.log('ROI frame rate changed, auto-saving...');
+                saveConfiguration();
+            });
+
+            // 数据生成频率控制
+            document.getElementById('data-fps-slider').addEventListener('input', updateDataFpsDisplay);
+            document.getElementById('data-fps-slider').addEventListener('change', applyDataFps);
+
+            // 波峰检测配置控制
+            document.getElementById('apply-peak-config-btn').addEventListener('click', applyPeakDetectionConfig);
+
+            // 添加波峰检测配置实时同步和自动保存
+            const peakInputs = ['peak-threshold', 'peak-margin-frames', 'peak-difference-threshold', 'peak-min-region-length'];
+
+            // UI模式切换功能
+            function toggleUIMode() {
+                const newMode = appState.uiMode === 'expanded' ? 'compact' : 'expanded';
+                appState.uiMode = newMode;
+
+                // 更新body类名以触发CSS样式变化
+                document.body.classList.toggle('compact-mode', newMode === 'compact');
+                document.body.classList.toggle('expanded-mode', newMode === 'expanded');
+
+                // 更新按钮文本
+                const uiToggleText = document.getElementById('ui-toggle-text');
+                if (uiToggleText) {
+                    uiToggleText.textContent = newMode === 'compact' ? '放大' : '缩小';
+                }
+
+                // 保存用户偏好到localStorage
+                try {
+                    localStorage.setItem('newfem-ui-mode', newMode);
+                } catch (e) {
+                    console.warn('无法保存UI模式偏好到localStorage:', e);
+                }
+
+                console.log(`UI模式切换为: ${newMode}`);
+            }
+
+            // 从localStorage恢复UI模式偏好
+            function restoreUIMode() {
+                try {
+                    const savedMode = localStorage.getItem('newfem-ui-mode');
+                    if (savedMode === 'compact' || savedMode === 'expanded') {
+                        appState.uiMode = savedMode;
+                        document.body.classList.toggle('compact-mode', savedMode === 'compact');
+                        document.body.classList.toggle('expanded-mode', savedMode === 'expanded');
+
+                        // 更新按钮文本
+                        const uiToggleText = document.getElementById('ui-toggle-text');
+                        if (uiToggleText) {
+                            uiToggleText.textContent = savedMode === 'compact' ? '放大' : '缩小';
+                        }
+
+                        console.log(`恢复UI模式偏好: ${savedMode}`);
+                    }
+                } catch (e) {
+                    console.warn('无法从localStorage恢复UI模式偏好:', e);
+                }
+            }
+
+            // 添加UI切换按钮事件监听器
+            const uiToggleBtn = document.getElementById('ui-toggle-btn');
+            if (uiToggleBtn) {
+                uiToggleBtn.addEventListener('click', toggleUIMode);
+                console.log('UI切换按钮事件监听器已添加');
+            } else {
+                console.error('未找到UI切换按钮元素');
+            }
+
+            // 恢复UI模式偏好
+            restoreUIMode();
+
+            // 防抖函数，避免频繁API调用
+            function debounce(func, wait) {
+                let timeout;
+                return function executedFunction(...args) {
+                    const later = () => {
+                        clearTimeout(timeout);
+                        func(...args);
+                    };
+                    clearTimeout(timeout);
+                    timeout = setTimeout(later, wait);
+                };
+            }
+
+            // 实时同步阈值和边界扩展参数到后端
+            const syncThresholdParameters = debounce(async () => {
+                try {
+                    const threshold = parseFloat(document.getElementById('peak-threshold').value) || 105.0;
+                    const marginFrames = parseInt(document.getElementById('peak-margin-frames').value) || 5;
+
+                    // 基本验证
+                    if (threshold < 50.0 || threshold > 200.0 || marginFrames < 1 || marginFrames > 20) {
+                        console.warn('Invalid parameters, skipping sync:', { threshold, marginFrames });
+                        return;
+                    }
+
+                    // 发送到后端
+                    const config = {
+                        threshold: threshold,
+                        margin_frames: marginFrames
+                    };
+
+                    console.log('Syncing threshold parameters to backend:', config);
+                    const response = await ApiService.setPeakDetectionConfig(config);
+                    if (response && response.success) {
+                        console.log('Threshold parameters synced successfully');
+                    }
+                } catch (error) {
+                    console.error('Failed to sync threshold parameters:', error);
+                }
+            }, 500); // 500ms防抖
+
+            peakInputs.forEach(id => {
+                // 为阈值和边界扩展添加实时input事件监听
+                if (id === 'peak-threshold' || id === 'peak-margin-frames') {
+                    document.getElementById(id).addEventListener('input', () => {
+                        console.log(`Real-time parameter change: ${id}`);
+                        syncThresholdParameters();
+                    });
+                }
+
+                // 保持原有的change事件监听用于本地保存
+                document.getElementById(id).addEventListener('change', () => {
+                    console.log('Peak detection configuration changed, auto-saving...');
+                    saveConfiguration();
+                });
+            });
+
+            // 自动加载保存的配置
+            const hasSavedConfig = applySavedConfigToUI();
+
+            // 如果有保存的配置，延迟自动应用
+            if (hasSavedConfig) {
+                setTimeout(() => {
+                    // 自动应用ROI配置
+                    const roiX1 = parseInt(document.getElementById('roi-x1').value);
+                    const roiY1 = parseInt(document.getElementById('roi-y1').value);
+                    const roiX2 = parseInt(document.getElementById('roi-x2').value);
+                    const roiY2 = parseInt(document.getElementById('roi-y2').value);
+
+                    if (roiX1 > 0 || roiY1 > 0 || roiX2 > 0 || roiY2 > 0) {
+                        console.log('Auto-applying saved ROI configuration...');
+                        applyRoiConfig().catch(error => {
+                            console.warn('Failed to auto-apply ROI config:', error);
+                        });
+                    }
+
+                    // 自动应用波峰检测配置
+                    const threshold = parseFloat(document.getElementById('peak-threshold').value);
+                    if (threshold > 0) {
+                        console.log('Auto-applying saved peak detection configuration...');
+                        applyPeakDetectionConfig().catch(error => {
+                            console.warn('Failed to auto-apply peak detection config:', error);
+                        });
+                    }
+                }, 2000); // 延迟2秒让系统初始化完成
+            }
+
+            // 启动
+            initConnection();
+        });
+
+    </script>
+</body>
+</html>
