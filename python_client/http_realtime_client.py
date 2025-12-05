@@ -410,20 +410,28 @@ class HTTPRealtimeClientUI(tk.Tk):
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side="right", fill="both", expand=True)
 
-        # 上方图表框架
+        # 上方截取曲线显示框架 - 放在实时图表上方
+        captured_frame = ttk.LabelFrame(right_frame, text="Captured Curve")
+        captured_frame.pack(fill="both", expand=False, pady=(0, 4))
+        # 设置截取曲线框架的固定高度
+        captured_frame.configure(height=300)
+
+        # 创建截取曲线显示区域 - 使用Frame包装以支持高度设置
+        self.captured_wrapper = ttk.Frame(captured_frame)
+        self.captured_wrapper.pack(fill="both", expand=True, padx=4, pady=4)
+        self.captured_wrapper.pack_propagate(False)  # 防止子组件改变父容器大小
+        self.captured_wrapper.configure(height=300)  # 设置最小高度
+
+        # 在Frame内部创建Label
+        self.captured_label = ttk.Label(self.captured_wrapper, text="No captured curve yet. Click '截取曲线' to capture data.",
+                                      relief="sunken", background="white")
+        self.captured_label.pack(fill="both", expand=True)
+
+        # 下方实时图表框架
         plot_frame = ttk.LabelFrame(right_frame, text="Real-time Charts")
-        plot_frame.pack(fill="both", expand=True, pady=(0, 4))
+        plot_frame.pack(fill="both", expand=True, pady=(4, 0))
 
         self.plot_frame = plot_frame
-
-        # 下方截取曲线显示框架
-        captured_frame = ttk.LabelFrame(right_frame, text="Captured Curve")
-        captured_frame.pack(fill="both", expand=False, pady=(4, 0))
-
-        # 创建截取曲线显示区域
-        self.captured_label = ttk.Label(captured_frame, text="No captured curve yet. Click '截取曲线' to capture data.",
-                                      relief="sunken", background="white")
-        self.captured_label.pack(fill="x", padx=4, pady=4)
 
         # 截取信息
         capture_info = ttk.Frame(captured_frame)
@@ -858,9 +866,17 @@ class HTTPRealtimeClientUI(tk.Tk):
             # 首先清理之前的画布 - 修复第二次截取无法显示的关键问题
             self._clear_capture()
 
-            # 创建新图表
-            fig, ax = plt.subplots(figsize=(10, 4), dpi=100)
+            # 创建新图表 - 使用与主图表相同的大小
+            fig, ax = plt.subplots(figsize=(12, 8), dpi=100)
             fig.patch.set_facecolor('white')
+
+            # 打印窗口大小信息
+            self._log(f"截取曲线图表尺寸信息:")
+            self._log(f"  - 图表尺寸: 12 x 8 英寸")
+            self._log(f"  - DPI设置: 100")
+            self._log(f"  - 像素尺寸: {fig.get_figwidth() * fig.dpi:.0f} x {fig.get_figheight() * fig.dpi:.0f} 像素")
+            self._log(f"  - 容器高度: 300 像素 (最小)")
+            self._log(f"  - 位置: 实时图表上方")
 
             # 提取时间和数值 - 适配服务器返回的数据格式
             times = [point.get("t", 0) for point in data_points]
@@ -938,7 +954,7 @@ class HTTPRealtimeClientUI(tk.Tk):
 
                 # 创建并嵌入canvas - 添加验证
                 self._log("DEBUG: Creating FigureCanvasTkAgg...")
-                canvas = FigureCanvasTkAgg(fig, master=self.captured_label)
+                canvas = FigureCanvasTkAgg(fig, master=self.captured_wrapper)
 
                 # 验证canvas创建是否成功
                 if canvas is None:
