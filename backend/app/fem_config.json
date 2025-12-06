@@ -25,10 +25,10 @@
     }
   },
   "peak_detection": {
-    "threshold": 102.7,
-    "margin_frames": 6,
-    "difference_threshold": 2.3,
-    "min_region_length": 4
+    "threshold": 104.0,
+    "margin_frames": 5,
+    "difference_threshold": 1.1,
+    "min_region_length": 5
   },
   "security": {
     "password": "31415"

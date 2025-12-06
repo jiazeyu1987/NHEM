@@ -190,3 +190,81 @@ Backend API → Async Requests → Matplotlib Rendering → GUI Updates → User
 - CORS configuration for web access
 - Input validation via Pydantic models
 - No sensitive data in client-side configurations
+
+## Project Structure
+
+```
+NHEM/
+├── backend/                    # FastAPI backend server
+│   ├── app/
+│   │   ├── api/               # REST API endpoints (30+ endpoints)
+│   │   ├── core/              # Core processing components
+│   │   │   ├── processor.py   # 45 FPS data processing loop
+│   │   │   ├── data_store.py  # Thread-safe circular buffers
+│   │   │   ├── enhanced_peak_detector.py  # Advanced detection
+│   │   │   └── socket_server.py  # 60 FPS WebSocket streaming
+│   │   ├── config.py          # Pydantic-based configuration
+│   │   └── models.py          # Data models
+│   ├── requirements.txt       # Python dependencies
+│   ├── fem_config.json        # Main configuration file
+│   └── run.py                # Application entry point
+├── front/                     # HTML5 frontend
+│   ├── index.html            # Single-page application (135KB)
+│   └── config.json           # Frontend configuration
+├── python_client/             # Python monitoring clients
+│   ├── run_realtime_client.py # Full GUI client
+│   ├── simple_http_client.py # Simple GUI client
+│   ├── client.py             # CLI interface
+│   ├── realtime_plotter.py   # Matplotlib plotting component
+│   └── http_client_config.json
+├── doc/                       # Comprehensive documentation
+│   ├── code_structure/       # Architecture documentation (11 files)
+│   └── single_task/          # Task-specific documentation
+├── .claude/                   # Claude Code specifications
+│   ├── commands/             # Custom slash commands
+│   ├── agents/               # Specialized agent configurations
+│   └── templates/            # Document templates
+└── CLAUDE.md                 # This file
+```
+
+## Additional Development Tools
+
+### Custom Claude Code Commands
+The project includes specialized slash commands in `.claude/commands/`:
+- `/spec-*` commands for specification management
+- `/bug-*` commands for bug tracking and fixing
+
+### Documentation Templates
+Professional templates available in `.claude/templates/`:
+- Requirements, design, and task templates
+- Bug report and analysis templates
+- Product and technical specification templates
+
+### Performance Monitoring
+- Built-in health check at `/health`
+- System status monitoring at `/status`
+- Performance metrics at `/data/realtime?count=N`
+- API rate limiting and connection pooling
+
+## Development Best Practices
+
+### Backend Development
+- Use FastAPI with Pydantic for data validation
+- Implement thread-safe data structures for concurrent processing
+- Follow layered architecture: API → Core → Data
+- Add comprehensive logging with structured format
+- Use circular buffers for memory management
+
+### Frontend Development
+- Maintain ES6+ JavaScript compatibility
+- Optimize for 20 FPS canvas rendering performance
+- Use VS Code-style UI theme for consistency
+- Implement proper error boundaries and retry logic
+- Test cross-browser compatibility
+
+### Python Client Development
+- Follow PEP 8 style guidelines with type hints
+- Support multiple client variants (GUI/CLI)
+- Use matplotlib for real-time plotting with hardware acceleration
+- Implement proper exception handling and retry logic
+- Support Python 3.8+ compatibility

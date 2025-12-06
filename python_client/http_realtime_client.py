@@ -832,7 +832,7 @@ class HTTPRealtimeClientUI(tk.Tk):
                             self._log(f"DEBUG: Time span: [{min(times):.3f}, {max(times):.3f}], Value span: [{min(values):.2f}, {max(values):.2f}]")
 
                         self._log(f"Curve capture successful! Got {len(captured_data)} data points with {len(peaks)} peaks")
-                        self._display_captured_curve(captured_data, peaks)
+                        self._display_captured_curve(captured_data, peaks, peak_results)
 
                         # 更新截取信息
                         self.captured_count_label.config(text=str(len(captured_data)))
@@ -856,7 +856,7 @@ class HTTPRealtimeClientUI(tk.Tk):
         finally:
             self.btn_capture.config(state="normal", text="截取曲线")
 
-    def _display_captured_curve(self, data_points, peaks):
+    def _display_captured_curve(self, data_points, peaks, peak_results=None):
         """显示截取的曲线"""
         try:
             import matplotlib.pyplot as plt
@@ -896,6 +896,31 @@ class HTTPRealtimeClientUI(tk.Tk):
             if len(times) > 0 and len(values) > 0:
                 # 绘制曲线
                 ax.plot(times, values, 'b-', linewidth=2, label='Captured Signal')
+
+                # 添加基于真实波峰检测的区间高亮
+                if peak_results and len(times) > 0:
+                    green_peaks = peak_results.get("green_peaks", [])
+                    red_peaks = peak_results.get("red_peaks", [])
+
+                    self._log(f"DEBUG: Peak results - Green peaks: {len(green_peaks)}, Red peaks: {len(red_peaks)}")
+
+                    # 绘制绿色波峰区间（稳定HEM事件）
+                    for i, (start_frame, end_frame) in enumerate(green_peaks):
+                        if start_frame < len(times) and end_frame < len(times):
+                            start_time = times[start_frame]
+                            end_time = times[end_frame]
+                            ax.axvspan(start_time, end_time, alpha=0.2, color='green',
+                                      label='Stable HEM' if i == 0 else None)
+                            self._log(f"DEBUG: Green peak {i+1}: frames {start_frame}-{end_frame}, time {start_time:.3f}-{end_time:.3f}")
+
+                    # 绘制红色波峰区间（不稳定HEM事件）
+                    for i, (start_frame, end_frame) in enumerate(red_peaks):
+                        if start_frame < len(times) and end_frame < len(times):
+                            start_time = times[start_frame]
+                            end_time = times[end_frame]
+                            ax.axvspan(start_time, end_time, alpha=0.2, color='red',
+                                      label='Unstable HEM' if i == 0 else None)
+                            self._log(f"DEBUG: Red peak {i+1}: frames {start_frame}-{end_frame}, time {start_time:.3f}-{end_time:.3f}")
 
                 # 强制设置Y轴范围，确保小的灰度变化能够清晰显示
                 min_val = min(values)
