@@ -194,6 +194,277 @@ class RoiCaptureService:
 
         return roi_data
 
+    def capture_dual_roi(self, roi_config: RoiConfig) -> Tuple[Optional[RoiData], Optional[RoiData]]:
+        """
+        截取双ROI区域：ROI1为原始配置区域，ROI2为从ROI1中心截取的50x50区域
+
+        Args:
+            roi_config: ROI1配置
+
+        Returns:
+            Tuple[Optional[RoiData], Optional[RoiData]]: (ROI1数据, ROI2数据)，失败返回None
+        """
+        try:
+            # 验证ROI1坐标
+            if not roi_config.validate_coordinates():
+                self._logger.error("Invalid ROI1 coordinates: %s", roi_config)
+                return None, None
+
+            # 检查ROI1是否足够大以包含50x50的ROI2
+            if roi_config.width < 50 or roi_config.height < 50:
+                self._logger.error("ROI1 too small for dual ROI: size=%dx%d, minimum 50x50 required",
+                                 roi_config.width, roi_config.height)
+                return None, None
+
+            current_time = time.time()
+
+            # 使用相同的缓存机制（基于ROI1配置）
+            time_valid = current_time - self._last_capture_time < self._cache_interval
+            config_unchanged = (self._last_roi_config is not None and
+                               self._roi_config_changed(roi_config, self._last_roi_config) == False)
+
+            if (self._cached_roi_data is not None and time_valid and config_unchanged):
+                self._logger.debug(f"Using cached dual ROI data (age: {current_time - self._last_capture_time:.3f}s)")
+                # 从缓存重建ROI2数据
+                roi1_data = self._cached_roi_data
+                roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data)
+                return roi1_data, roi2_data
+            else:
+                self._logger.debug(f"Forcing new dual ROI capture - time_valid: {time_valid}, config_unchanged: {config_unchanged}")
+
+            # 执行真实双ROI截图操作
+            roi1_data, roi2_data = self._capture_dual_roi_internal(roi_config)
+
+            # 更新缓存和状态（仅缓存ROI1）
+            if roi1_data is not None:
+                self._cached_roi_data = roi1_data
+                self._last_roi_config = roi_config
+                self._last_capture_time = current_time
+                self._logger.debug("Dual ROI captured successfully (ROI1 gray=%.2f, ROI2 gray=%.2f)",
+                                 roi1_data.gray_value, roi2_data.gray_value if roi2_data else 0.0)
+
+                # 集成历史存储 - 保存ROI2帧到DataStore（用于峰值检测）
+                try:
+                    from ..core.data_store import data_store
+                    # 获取当前主信号帧数
+                    _, main_frame_count, _, _, _, _ = data_store.get_status_snapshot()
+
+                    # 添加ROI2历史帧（用于峰值检测）
+                    if roi2_data:
+                        roi2_frame = data_store.add_roi_frame(
+                            gray_value=roi2_data.gray_value,
+                            roi_config=self._create_roi2_config(roi_config),
+                            frame_count=main_frame_count,
+                            capture_duration=self._cache_interval
+                        )
+
+                        # 减少日志频率 - 每50帧记录一次
+                        if roi2_frame.index % 50 == 0:
+                            self._logger.debug("ROI2 frame added to history: index=%d, gray_value=%.2f, main_frame=%d",
+                                               roi2_frame.index, roi2_data.gray_value, main_frame_count)
+
+                except Exception as e:
+                    self._logger.error("Failed to add ROI2 frame to history: %s", str(e))
+
+            return roi1_data, roi2_data
+
+        except Exception as e:
+            self._logger.error("Failed to capture dual ROI: %s", str(e))
+            return None, None
+
+    def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData) -> Optional[RoiData]:
+        """从ROI1数据中提取ROI2（50x50中心区域）"""
+        try:
+            # 计算ROI2在ROI1中的坐标（50x50中心）
+            roi1_center_x = roi1_config.width // 2
+            roi1_center_y = roi1_config.height // 2
+            roi2_size = 50
+
+            # ROI2的起始和结束坐标（在ROI1内）
+            roi2_x1 = max(0, roi1_center_x - roi2_size // 2)
+            roi2_y1 = max(0, roi1_center_y - roi2_size // 2)
+            roi2_x2 = min(roi1_config.width, roi2_x1 + roi2_size)
+            roi2_y2 = min(roi1_config.height, roi2_y1 + roi2_size)
+
+            # 如果ROI1太小，调整ROI2大小
+            if roi2_x2 - roi2_x1 < 50 or roi2_y2 - roi2_y1 < 50:
+                self._logger.warning("ROI1 too small for 50x50 ROI2, using maximum available size")
+                roi2_x2 = min(roi1_config.width, roi2_x1 + (roi2_x2 - roi2_x1))
+                roi2_y2 = min(roi1_config.height, roi2_y1 + (roi2_y2 - roi2_y1))
+
+            # 从base64解码ROI1图像
+            import base64
+            from io import BytesIO
+
+            # 提取base64数据
+            if roi1_data.pixels.startswith('data:image/png;base64,'):
+                base64_data = roi1_data.pixels.replace('data:image/png;base64,', '')
+            else:
+                base64_data = roi1_data.pixels
+
+            # 解码图像
+            image_data = base64.b64decode(base64_data)
+            roi1_image = Image.open(BytesIO(image_data))
+
+            # 裁剪ROI2区域
+            roi2_image = roi1_image.crop((roi2_x1, roi2_y1, roi2_x2, roi2_y2))
+
+            # 计算ROI2平均灰度值
+            gray_roi2 = roi2_image.convert('L')
+            histogram = gray_roi2.histogram()
+            roi2_width = roi2_x2 - roi2_x1
+            roi2_height = roi2_y2 - roi2_y1
+            total_pixels = roi2_width * roi2_height
+            total_sum = sum(i * count for i, count in enumerate(histogram))
+            average_gray = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
+
+            # 调整ROI2图像大小到标准尺寸（200x150用于显示）
+            try:
+                roi2_resized = roi2_image.resize((200, 150), Image.Resampling.LANCZOS)
+            except AttributeError:
+                roi2_resized = roi2_image.resize((200, 150), Image.LANCZOS)
+
+            # 转换为base64
+            buffer = BytesIO()
+            roi2_resized.save(buffer, format='PNG')
+            roi2_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+            roi2_data = RoiData(
+                width=roi2_width,
+                height=roi2_height,
+                pixels=f"data:image/png;base64,{roi2_base64}",
+                gray_value=average_gray,
+                format="base64"
+            )
+
+            self._logger.debug("ROI2 extracted from ROI1: size=%dx%d, gray_value=%.2f",
+                             roi2_width, roi2_height, average_gray)
+
+            return roi2_data
+
+        except Exception as e:
+            self._logger.error("Failed to extract ROI2 from ROI1: %s", str(e))
+            return None
+
+    def _capture_dual_roi_internal(self, roi_config: RoiConfig) -> Tuple[Optional[RoiData], Optional[RoiData]]:
+        """执行实际的双ROI截图操作"""
+        # 首先截取整个屏幕
+        screen = self.capture_screen()
+        if screen is None:
+            self._logger.error("Failed to capture screen for dual ROI")
+            return None, None
+
+        # 检查ROI1是否在屏幕范围内
+        screen_width, screen_height = screen.size
+        if (roi_config.x2 > screen_width or roi_config.y2 > screen_height or
+            roi_config.x1 < 0 or roi_config.y1 < 0):
+            self._logger.warning(
+                "ROI1 coordinates exceed screen bounds. Screen: %dx%d, ROI1: (%d,%d)->(%d,%d)",
+                screen_width, screen_height,
+                roi_config.x1, roi_config.y1, roi_config.x2, roi_config.y2
+            )
+            # 自动调整到屏幕范围内
+            x1 = max(0, min(roi_config.x1, screen_width - 1))
+            y1 = max(0, min(roi_config.y1, screen_height - 1))
+            x2 = max(x1 + 1, min(roi_config.x2, screen_width))
+            y2 = max(y1 + 1, min(roi_config.y2, screen_height))
+        else:
+            x1, y1, x2, y2 = roi_config.x1, roi_config.y1, roi_config.x2, roi_config.y2
+
+        # 截取ROI1区域
+        roi1_image = screen.crop((x1, y1, x2, y2))
+
+        # 计算ROI1平均灰度值
+        gray_roi1 = roi1_image.convert('L')
+        histogram = gray_roi1.histogram()
+        total_pixels = roi_config.width * roi_config.height
+        total_sum = sum(i * count for i, count in enumerate(histogram))
+        average_gray1 = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
+
+        # 计算ROI2在屏幕上的坐标（从ROI1中心截取50x50）
+        roi1_center_x_screen = x1 + (x2 - x1) // 2
+        roi1_center_y_screen = y1 + (y2 - y1) // 2
+        roi2_size = 50
+
+        # ROI2的屏幕坐标
+        roi2_x1 = max(x1, roi1_center_x_screen - roi2_size // 2)
+        roi2_y1 = max(y1, roi1_center_y_screen - roi2_size // 2)
+        roi2_x2 = min(x2, roi2_x1 + roi2_size)
+        roi2_y2 = min(y2, roi2_y1 + roi2_size)
+
+        # 如果ROI1太小，调整ROI2
+        if roi2_x2 - roi2_x1 < 50 or roi2_y2 - roi2_y1 < 50:
+            roi2_x2 = min(x2, roi2_x1 + (roi2_x2 - roi2_x1))
+            roi2_y2 = min(y2, roi2_y1 + (roi2_y2 - roi2_y1))
+
+        # 从屏幕截取ROI2区域
+        roi2_image = screen.crop((roi2_x1, roi2_y1, roi2_x2, roi2_y2))
+
+        # 计算ROI2平均灰度值
+        gray_roi2 = roi2_image.convert('L')
+        histogram2 = gray_roi2.histogram()
+        roi2_width = roi2_x2 - roi2_x1
+        roi2_height = roi2_y2 - roi2_y1
+        total_pixels2 = roi2_width * roi2_height
+        total_sum2 = sum(i * count for i, count in enumerate(histogram2))
+        average_gray2 = float(total_sum2 / total_pixels2) if total_pixels2 > 0 else 0.0
+
+        # 调整图像大小到标准尺寸（200x150）
+        try:
+            roi1_resized = roi1_image.resize((200, 150), Image.Resampling.LANCZOS)
+            roi2_resized = roi2_image.resize((200, 150), Image.Resampling.LANCZOS)
+        except AttributeError:
+            roi1_resized = roi1_image.resize((200, 150), Image.LANCZOS)
+            roi2_resized = roi2_image.resize((200, 150), Image.LANCZOS)
+
+        # 转换为base64
+        buffer1 = io.BytesIO()
+        roi1_resized.save(buffer1, format='PNG')
+        roi1_base64 = base64.b64encode(buffer1.getvalue()).decode('utf-8')
+
+        buffer2 = io.BytesIO()
+        roi2_resized.save(buffer2, format='PNG')
+        roi2_base64 = base64.b64encode(buffer2.getvalue()).decode('utf-8')
+
+        # 创建ROI数据
+        roi1_data = RoiData(
+            width=roi_config.width,
+            height=roi_config.height,
+            pixels=f"data:image/png;base64,{roi1_base64}",
+            gray_value=average_gray1,
+            format="base64"
+        )
+
+        roi2_data = RoiData(
+            width=roi2_width,
+            height=roi2_height,
+            pixels=f"data:image/png;base64,{roi2_base64}",
+            gray_value=average_gray2,
+            format="base64"
+        )
+
+        self._logger.debug(
+            "Dual ROI captured successfully: ROI1=%dx%d(gray=%.2f), ROI2=%dx%d(gray=%.2f)",
+            roi_config.width, roi_config.height, average_gray1,
+            roi2_width, roi2_height, average_gray2
+        )
+
+        return roi1_data, roi2_data
+
+    def _create_roi2_config(self, roi1_config: RoiConfig) -> RoiConfig:
+        """创建ROI2的配置对象"""
+        # ROI2在屏幕上的坐标
+        roi1_center_x = roi1_config.x1 + roi1_config.width // 2
+        roi1_center_y = roi1_config.y1 + roi1_config.height // 2
+        roi2_size = 50
+
+        roi2_x1 = max(roi1_config.x1, roi1_center_x - roi2_size // 2)
+        roi2_y1 = max(roi1_config.y1, roi1_center_y - roi2_size // 2)
+        roi2_x2 = min(roi1_config.x2, roi2_x1 + roi2_size)
+        roi2_y2 = min(roi1_config.y2, roi2_y1 + roi2_size)
+
+        return RoiConfig(x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2)
+
     def get_roi_frame_rate(self) -> int:
         """获取当前ROI帧率设置"""
         return self._frame_rate

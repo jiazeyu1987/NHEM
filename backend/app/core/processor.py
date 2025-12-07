@@ -79,13 +79,19 @@ class DataProcessor:
 
             # 根据ROI配置状态选择数据源
             if roi_configured:
-                # 使用真实ROI数据
-                roi_data = roi_capture_service.capture_roi(roi_config)
-                if roi_data and roi_data.gray_value > 0:
-                    signal_value = roi_data.gray_value
-                    data_source = "ROI"
+                # 使用双ROI数据：ROI2用于峰值检测，ROI1用于显示
+                roi1_data, roi2_data = roi_capture_service.capture_dual_roi(roi_config)
+                if roi2_data and roi2_data.gray_value > 0:
+                    # 使用ROI2（50x50中心区域）进行峰值检测
+                    signal_value = roi2_data.gray_value
+                    data_source = "ROI2"
+                    # 存储ROI1数据用于前端显示（在data_store中已通过capture_dual_roi处理）
+                elif roi1_data and roi1_data.gray_value > 0:
+                    # ROI2失败但ROI1成功，回退到ROI1
+                    signal_value = roi1_data.gray_value
+                    data_source = "ROI1_Fallback"
                 else:
-                    # ROI截图失败，回退到模拟数据
+                    # 双ROI截图失败，回退到模拟数据
                     signal_value = base_value + 10.0 * math.sin(2 * math.pi * 0.5 * t)
                     data_source = "Fallback"
             else:

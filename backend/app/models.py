@@ -55,6 +55,26 @@ class RealtimeDataResponse(BaseModel):
     baseline: float
 
 
+class DualRoiDataResponse(BaseModel):
+    """双ROI数据响应模型"""
+    roi1_data: RoiData  # 大ROI区域数据
+    roi2_data: RoiData  # 50x50中心ROI数据
+    roi1_config: RoiConfig  # ROI1配置
+    roi2_config: RoiConfig  # ROI2配置（从ROI1中心计算）
+
+
+class DualRealtimeDataResponse(BaseModel):
+    """双ROI实时数据响应模型"""
+    type: str = "dual_realtime_data"
+    timestamp: datetime
+    frame_count: int
+    series: List[TimeSeriesPoint]
+    dual_roi_data: DualRoiDataResponse
+    peak_signal: Optional[int]
+    enhanced_peak: Optional[EnhancedPeakSignal] = None
+    baseline: float
+
+
 class BaseSuccessResponse(BaseModel):
     type: str
     timestamp: datetime

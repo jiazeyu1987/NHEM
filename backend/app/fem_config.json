@@ -18,8 +18,8 @@
     "frame_rate": 4,
     "update_interval": 0.5,
     "default_config": {
-      "x1": 1480,
-      "y1": 480,
+      "x1": 480,
+      "y1": 80,
       "x2": 1580,
       "y2": 580
     }

@@ -27,6 +27,8 @@ from ..models import (
     AnalyzeSeriesPoint,
     ControlCommandResponse,
     ControlStatusResponse,
+    DualRealtimeDataResponse,
+    DualRoiDataResponse,
     ErrorDetails,
     ErrorResponse,
     HealthResponse,
@@ -284,6 +286,183 @@ async def realtime_data(
         peak_signal=peak_signal,
         baseline=baseline,
     )
+
+
+@router.get("/data/dual-realtime", response_model=DualRealtimeDataResponse)
+async def dual_realtime_data(
+    count: int = Query(100, ge=1, le=1000, description="Number of data points"),
+) -> DualRealtimeDataResponse:
+    """获取双ROI实时数据，同时返回ROI1（大区域）和ROI2（50x50中心区域）的数据"""
+    logger.debug("📈 Dual ROI realtime data requested: count=%d", count)
+
+    # 检查系统状态
+    system_status = data_store.get_status()
+    if system_status != SystemStatus.RUNNING and system_status != SystemStatus.PAUSED:
+        logger.debug("🛑 System not running (status=%s), returning empty dual ROI data", system_status.value)
+        now = datetime.utcnow()
+
+        # 返回空的双ROI数据
+        empty_roi_config = RoiConfig(x1=0, y1=0, x2=1, y2=1)
+        empty_roi_data = RoiData(width=1, height=1, pixels="", gray_value=0.0, format="base64")
+
+        return DualRealtimeDataResponse(
+            timestamp=now,
+            frame_count=data_store.get_frame_count(),
+            series=[],
+            dual_roi_data=DualRoiDataResponse(
+                roi1_data=empty_roi_data,
+                roi2_data=empty_roi_data,
+                roi1_config=empty_roi_config,
+                roi2_config=empty_roi_config,
+            ),
+            peak_signal=None,
+            baseline=data_store.get_baseline(),
+        )
+
+    # 检查ROI配置状态
+    roi_configured, roi_config = data_store.get_roi_status()
+    if not roi_configured:
+        # ROI未配置，返回空数据
+        now = datetime.utcnow()
+        logger.info("⚠️ Dual ROI data requested but ROI not configured - returning empty response")
+
+        empty_roi_config = RoiConfig(x1=0, y1=0, x2=1, y2=1)
+        empty_roi_data = RoiData(width=0, height=0, pixels="roi_not_configured", gray_value=0.0, format="text")
+
+        return DualRealtimeDataResponse(
+            timestamp=now,
+            frame_count=0,
+            series=[],
+            dual_roi_data=DualRoiDataResponse(
+                roi1_data=empty_roi_data,
+                roi2_data=empty_roi_data,
+                roi1_config=empty_roi_config,
+                roi2_config=empty_roi_config,
+            ),
+            peak_signal=None,
+            baseline=0.0,
+        )
+
+    # ROI已配置，获取双ROI数据
+    frames = data_store.get_series(count)
+
+    # 获取状态快照
+    (
+        _status,
+        frame_count,
+        current_value,
+        peak_signal,
+        _buffer_size,
+        baseline,
+    ) = data_store.get_status_snapshot()
+
+    try:
+        # 使用双ROI截图服务
+        roi1_data, roi2_data = roi_capture_service.capture_dual_roi(roi_config)
+
+        if roi1_data is None or roi2_data is None:
+            # 双ROI截图失败
+            logger.warning("Dual ROI capture failed, returning empty data")
+            roi1_data = RoiData(
+                width=roi_config.width,
+                height=roi_config.height,
+                pixels="roi1_capture_failed",
+                gray_value=baseline,
+                format="text",
+            )
+            roi2_data = RoiData(
+                width=50,
+                height=50,
+                pixels="roi2_capture_failed",
+                gray_value=baseline,
+                format="text",
+            )
+            current_value = baseline
+            data_source = "Failed"
+        else:
+            # 双ROI截图成功，使用ROI2的灰度值作为主要数据源
+            current_value = roi2_data.gray_value
+            data_source = "DualROI"
+
+    except Exception as e:
+        logger.error("Error capturing dual ROI in dual_realtime_data: %s", str(e))
+        roi1_data = RoiData(
+            width=roi_config.width,
+            height=roi_config.height,
+            pixels="roi1_capture_error",
+            gray_value=baseline,
+            format="text",
+        )
+        roi2_data = RoiData(
+            width=50,
+            height=50,
+            pixels="roi2_capture_error",
+            gray_value=baseline,
+            format="text",
+        )
+        current_value = baseline
+        data_source = "Error"
+
+    # 生成时间序列数据
+    series = []
+    if roi1_data.format == "base64" and roi2_data.format == "base64":
+        # 双ROI数据有效，使用ROI2灰度值生成时间序列
+        roi_frame_rate = roi_capture_service.get_roi_frame_rate()
+        interval = 1.0 / roi_frame_rate
+
+        if count == 1:
+            # 单点请求：只生成最新的数据点
+            series.append(TimeSeriesPoint(t=0.0, value=current_value))
+        else:
+            # 多点请求：生成连续的时间点
+            for i in range(count):
+                t = i * interval
+                value = current_value
+                series.append(TimeSeriesPoint(t=t, value=value))
+
+    # 创建ROI2配置
+    roi2_config = _create_roi2_config(roi_config)
+
+    # 创建双ROI数据响应
+    dual_roi_data = DualRoiDataResponse(
+        roi1_data=roi1_data,
+        roi2_data=roi2_data,
+        roi1_config=roi_config,
+        roi2_config=roi2_config,
+    )
+
+    logger.debug(
+        "📊 Dual ROI realtime data response: frame_count=%d points=%d roi1_gray=%.3f roi2_gray=%.3f peak_signal=%s baseline=%.3f",
+        frame_count,
+        len(series),
+        roi1_data.gray_value,
+        roi2_data.gray_value,
+        str(peak_signal),
+        baseline,
+    )
+
+    return DualRealtimeDataResponse(
+        timestamp=datetime.utcnow(),
+        frame_count=frame_count,
+        series=series,
+        dual_roi_data=dual_roi_data,
+        peak_signal=peak_signal,
+        baseline=baseline,
+    )
+
+
+def _create_roi2_config(roi1_config: RoiConfig) -> RoiConfig:
+    """创建ROI2配置（从ROI1中心计算50x50区域）"""
+    roi1_center_x = roi1_config.x1 + roi1_config.width // 2
+    roi1_center_y = roi1_config.y1 + roi1_config.height // 2
+    roi2_size = 50
+
+    roi2_x1 = max(roi1_config.x1, roi1_center_x - roi2_size // 2)
+    roi2_y1 = max(roi1_config.y1, roi1_center_y - roi2_size // 2)
+    roi2_x2 = min(roi1_config.x2, roi2_x1 + roi2_size)
+    roi2_y2 = min(roi1_config.y2, roi2_y1 + roi2_size)
+
+    return RoiConfig(x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2)
 
 
 def verify_password(password: str) -> None:

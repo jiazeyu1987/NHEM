@@ -44,10 +44,20 @@ class HTTPRealtimeClient:
         self.data_count = 0
         self.last_update_time = 0
 
+        # 双ROI模式
+        self.dual_roi_mode = True  # 默认启用双ROI模式
+
         # 绘图器
         self.plotter: Optional[RealtimePlotter] = None
 
+        # ROI更新回调
+        self.roi_update_callback: Optional[callable] = None
+
         logger.info(f"HTTPRealtimeClient initialized for {base_url}")
+
+    def set_roi_update_callback(self, callback: callable):
+        """设置ROI更新回调函数"""
+        self.roi_update_callback = callback
 
     def test_connection(self) -> bool:
         """测试服务器连接"""
@@ -83,6 +93,17 @@ class HTTPRealtimeClient:
             return None
         except Exception as e:
             logger.error(f"Failed to get realtime data: {e}")
+            return None
+
+    def get_dual_roi_data(self) -> Optional[Dict[str, Any]]:
+        """获取双ROI实时数据"""
+        try:
+            response = self.session.get(f"{self.base_url}/data/dual-realtime?count=1", timeout=3)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get dual ROI data: {e}")
             return None
 
     def send_control_command(self, command: str) -> Optional[Dict[str, Any]]:
@@ -129,12 +150,25 @@ class HTTPRealtimeClient:
         """轮询循环"""
         while self.polling_running:
             try:
-                # 获取实时数据
-                data = self.get_realtime_data()
-                if data and data.get("type") == "realtime_data":
+                # 根据模式获取相应的数据
+                if self.dual_roi_mode:
+                    data = self.get_dual_roi_data()
+                    data_type = "dual_realtime_data"
+                else:
+                    data = self.get_realtime_data()
+                    data_type = "realtime_data"
+
+                if data and data.get("type") == data_type:
                     # 更新绘图器
                     if self.plotter:
                         self.plotter.update_data(data)
+
+                    # 如果是双ROI数据且有ROI回调，调用ROI更新
+                    if self.dual_roi_mode and data_type == "dual_realtime_data" and self.roi_update_callback:
+                        try:
+                            self.roi_update_callback(data)
+                        except Exception as e:
+                            logger.error(f"Error in ROI update callback: {e}")
 
                     self.data_count += 1
                     self.last_update_time = time.time()
@@ -735,15 +769,65 @@ class HTTPRealtimeClientUI(tk.Tk):
     def start_roi_updates(self):
         """开始ROI截图更新"""
         if self.connected and self.http_client:
-            self.update_roi_screenshot()
+            # 设置ROI更新回调
+            self.http_client.set_roi_update_callback(self._handle_roi_update_callback)
+            # 不再需要独立的ROI更新调度，现在由主轮询驱动
+            logger.info("ROI update callback configured, using main polling loop")
+
+    def _handle_roi_update_callback(self, data):
+        """处理来自主轮询的双ROI数据更新"""
+        try:
+            logger.debug("ROI update callback received data")
+
+            if not data or data.get("type") != "dual_realtime_data":
+                logger.debug(f"Skipping non-dual ROI data: type={data.get('type') if data else 'None'}")
+                return
+
+            dual_roi_data = data.get("dual_roi_data", {})
+            roi1_data = dual_roi_data.get("roi1_data", {})
+            roi2_data = dual_roi_data.get("roi2_data", {})
+
+            # 验证数据结构
+            if not roi1_data or not roi2_data:
+                logger.error("Missing ROI data in dual ROI response")
+                self._update_roi_displays_error("Missing ROI data in response")
+                return
+
+            if "pixels" not in roi1_data or "pixels" not in roi2_data:
+                logger.error("Missing pixel data in dual ROI response")
+                self._update_roi_displays_error("Missing pixel data in response")
+                return
+
+            # 更新双ROI显示
+            logger.debug("Updating dual ROI displays...")
+            self._update_dual_roi_displays(roi1_data, roi2_data)
+
+            # 更新ROI信息（显示ROI2的灰度值，因为ROI2用于峰值检测）
+            roi1_width = roi1_data.get("width", 0)
+            roi1_height = roi1_data.get("height", 0)
+            roi2_gray_value = roi2_data.get("gray_value", 0)
+
+            self.roi_resolution_label.config(text=f"ROI1: {roi1_width}x{roi1_height}")
+            self.roi_gray_value_label.config(text=f"ROI2: {roi2_gray_value:.1f}")
+
+            logger.info(f"✅ ROI updated via callback: ROI1={roi1_width}x{roi1_height}, ROI2 gray={roi2_gray_value:.1f}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in ROI update callback: {e}")
+            import traceback
+            logger.error(f"Callback traceback: {traceback.format_exc()}")
+            self._update_roi_displays_error(f"Callback error: {str(e)}")
 
     def update_roi_screenshot(self):
-        """更新ROI截图显示"""
-        if not self.connected or not self.http_client:
+        """更新ROI截图显示（单ROI模式 - 向后兼容）"""
+        if not self.connected or not self.http_client or self.http_client.dual_roi_mode:
+            # 双ROI模式不需要独立更新，由回调处理
             return
 
         try:
-            # 获取ROI数据
+            # 双ROI模式跳过，只处理单ROI模式（原有逻辑）
+
+            # 单ROI模式（原有逻辑）
             response = self.http_client.session.get(f"{self.http_client.base_url}/data/realtime?count=1", timeout=3)
             if response.status_code == 200:
                 data = response.json()
@@ -825,6 +909,75 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.roi_label_right.config(image=right_photo, text="")
         self.roi_label_right.right_image = right_photo  # 保持右侧引用
 
+    def _update_dual_roi_displays(self, roi1_data, roi2_data):
+        """更新双ROI显示：ROI1在左侧，ROI2在右侧"""
+        try:
+            logger.debug("Processing dual ROI display updates...")
+
+            # 处理ROI1（大区域）- 左侧显示
+            roi1_base64 = roi1_data["pixels"]
+            if roi1_base64.startswith("data:image/png;base64,"):
+                logger.debug("Processing ROI1 image...")
+                roi1_base64_data = roi1_base64.split("data:image/png;base64,")[1]
+                roi1_image_data = base64.b64decode(roi1_base64_data)
+                roi1_image = Image.open(io.BytesIO(roi1_image_data))
+
+                # 调整ROI1图像大小
+                try:
+                    roi1_resized = roi1_image.resize((250, 188), Image.Resampling.LANCZOS)
+                except AttributeError:
+                    # 兼容旧版本PIL
+                    roi1_resized = roi1_image.resize((250, 188), Image.LANCZOS)
+                roi1_photo = ImageTk.PhotoImage(roi1_resized)
+
+                # 更新左侧ROI显示
+                self.roi_label_left.config(image=roi1_photo, text="ROI1 (Large)")
+                self.roi_label_left.image = roi1_photo
+                logger.debug("✅ ROI1 display updated successfully")
+            else:
+                logger.warning("ROI1: Invalid base64 format")
+                self.roi_label_left.config(text="ROI1: Invalid data format", image="")
+
+            # 处理ROI2（50x50中心区域）- 右侧显示
+            roi2_base64 = roi2_data["pixels"]
+            if roi2_base64.startswith("data:image/png;base64,"):
+                logger.debug("Processing ROI2 image...")
+                roi2_base64_data = roi2_base64.split("data:image/png;base64,")[1]
+                roi2_image_data = base64.b64decode(roi2_base64_data)
+                roi2_image = Image.open(io.BytesIO(roi2_image_data))
+
+                # 调整ROI2图像大小
+                try:
+                    roi2_resized = roi2_image.resize((250, 188), Image.Resampling.LANCZOS)
+                except AttributeError:
+                    # 兼容旧版本PIL
+                    roi2_resized = roi2_image.resize((250, 188), Image.LANCZOS)
+                roi2_photo = ImageTk.PhotoImage(roi2_resized)
+
+                # 更新右侧ROI显示
+                self.roi_label_right.config(image=roi2_photo, text="ROI2 (50x50)")
+                self.roi_label_right.image = roi2_photo  # 保持一致的引用命名
+                logger.debug("✅ ROI2 display updated successfully")
+            else:
+                logger.warning("ROI2: Invalid base64 format")
+                self.roi_label_right.config(text="ROI2: Invalid data format", image="")
+
+            # 更新ROI信息（显示ROI2的灰度值，因为ROI2用于峰值检测）
+            roi1_width = roi1_data.get("width", 0)
+            roi1_height = roi1_data.get("height", 0)
+            roi2_gray_value = roi2_data.get("gray_value", 0)
+
+            self.roi_resolution_label.config(text=f"ROI1: {roi1_width}x{roi1_height}")
+            self.roi_gray_value_label.config(text=f"ROI2: {roi2_gray_value:.1f}")
+
+            logger.debug(f"✅ Dual ROI info updated: ROI1={roi1_width}x{roi1_height}, ROI2 gray={roi2_gray_value:.1f}")
+
+        except Exception as e:
+            logger.error(f"❌ Error updating dual ROI displays: {e}")
+            import traceback
+            logger.error(f"Dual ROI display traceback: {traceback.format_exc()}")
+            self._update_roi_displays_error("Dual ROI display error")
+
     def _update_roi_displays_error(self, error_message):
         """更新ROI显示错误状态"""
         # 更新左侧ROI显示
@@ -836,8 +989,6 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.roi_label_right.config(text=error_message, image="")
         if hasattr(self.roi_label_right, 'image'):
             self.roi_label_right.image = None
-        if hasattr(self.roi_label_right, 'right_image'):
-            self.roi_label_right.right_image = None
 
     def _capture_curve(self):
         """截取曲线数据"""
