@@ -275,7 +275,7 @@ class RoiCaptureService:
     def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData) -> Optional[RoiData]:
         """从ROI1数据中提取ROI2（50x50中心区域）"""
         try:
-            self._logger.info(f"Extracting ROI2 from ROI1: ROI1 config=({roi1_config.x1},{roi1_config.y1})->({roi1_config.x2},{roi1_config.y2}), "
+            self._logger.debug(f"Extracting ROI2 from ROI1: ROI1 config=({roi1_config.x1},{roi1_config.y1})->({roi1_config.x2},{roi1_config.y2}), "
                              f"size={roi1_config.width}x{roi1_config.height}")
 
             # 计算ROI2在ROI1中的坐标（50x50中心）
@@ -328,10 +328,7 @@ class RoiCaptureService:
             roi1_max = max(i for i, count in enumerate(roi1_hist) if count > 0)
             roi1_nonzero = sum(roi1_hist[1:])  # 排除0值的像素数量
             roi1_total = sum(roi1_hist)
-            self._logger.info(f"ROI1 overall pixel stats: min={roi1_min}, max={roi1_max}, "
-                             f"non_zero_pixels={roi1_nonzero}/{roi1_total} "
-                             f"({(roi1_nonzero/roi1_total)*100:.1f}%)")
-
+      
             # 如果ROI1图像大部分是黑色，记录警告
             if roi1_nonzero < roi1_total * 0.01:  # 少于1%的非零像素
                 self._logger.warning("ROI1 image appears to be mostly black - check ROI configuration")
@@ -368,11 +365,7 @@ class RoiCaptureService:
             rel_x2 = min(roi1_gray.width, rel_x1 + roi2_image_size)
             rel_y2 = min(roi1_gray.height, rel_y1 + roi2_image_size)
 
-            self._logger.info(f"ROI2 coordinate transformation: screen_center=({roi2_center_x},{roi2_center_y}) "
-                             f"scale=({scale_x:.2f},{scale_y:.2f}) image_center=({rel_center_x},{rel_center_y})")
-            self._logger.info(f"ROI2 relative coordinates in ROI1 image: ({rel_x1},{rel_y1})->({rel_x2},{rel_y2})")
-            self._logger.info(f"ROI1 image dimensions: {roi1_gray.size}")
-
+        
             # 验证坐标范围
             if (rel_x1 < 0 or rel_y1 < 0 or rel_x2 > roi1_gray.width or rel_y2 > roi1_gray.height):
                 self._logger.error(f"ROI2 coordinates exceed ROI1 image bounds: ROI1={roi1_gray.size}, ROI2_rel=({rel_x1},{rel_y1},{rel_x2},{rel_y2})")
@@ -395,37 +388,11 @@ class RoiCaptureService:
                 roi2_region_avg = sum(roi2_region_pixels) / len(roi2_region_pixels)
                 non_zero_count = sum(1 for p in roi2_region_pixels if p > 0)
 
-                self._logger.info(f"ROI1 center region (ROI2 area) pixel stats: min={roi2_region_min}, max={roi2_region_max}, avg={roi2_region_avg:.2f}")
-                self._logger.info(f"ROI1 center region non-zero pixels: {non_zero_count}/{len(roi2_region_pixels)} ({(non_zero_count/len(roi2_region_pixels))*100:.1f}%)")
-
+              
                 if roi2_region_max == 0:
                     self._logger.warning("ROI1 center region is completely black - ROI2 area will be black")
-
-                    # 详细分析ROI1图像的灰度值分布
-                    roi1_all_pixels = list(roi1_gray.getdata())
-                    roi1_unique_values = sorted(set(roi1_all_pixels))
-                    roi1_non_zero_total = sum(1 for p in roi1_all_pixels if p > 0)
-
-                    self._logger.info(f"ROI1 complete analysis: total_pixels={len(roi1_all_pixels)}, "
-                                     f"non_zero={roi1_non_zero_total}, unique_values={len(roi1_unique_values)}")
-                    self._logger.info(f"ROI1 gray value range: {min(roi1_unique_values)}-{max(roi1_unique_values)}")
-                    self._logger.info(f"ROI1 sample gray values: {roi1_unique_values[:20]}")
-
-                    # 检查ROI1图像的亮区分布
-                    if roi1_non_zero_total > 0:
-                        bright_pixels = [p for p in roi1_all_pixels if p > 50]  # 灰度值大于50的像素
-                        self._logger.info(f"ROI1 bright pixels (>50): {len(bright_pixels)} pixels, "
-                                       f"avg={sum(bright_pixels)/len(bright_pixels):.1f if bright_pixels else 0}")
-
-                        # 建议调整ROI配置
-                        self._logger.warning("SUGGESTION: Current ROI1 region contains mostly black content. "
-                                           "Consider adjusting ROI coordinates to capture an area with actual screen content.")
                 else:
                     self._logger.debug("ROI1 center region has valid pixel data")
-
-                    # 显示一些样本像素值
-                    sample_pixels = roi2_region_pixels[:20]
-                    self._logger.info(f"ROI2 area sample pixels: {sample_pixels}")
             else:
                 self._logger.error("Failed to sample ROI2 region pixels from ROI1")
 
@@ -447,19 +414,7 @@ class RoiCaptureService:
             total_sum = sum(i * count for i, count in enumerate(histogram))
             average_gray = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
 
-            # 添加ROI2灰度值诊断日志
-            if average_gray == 0.0:
-                self._logger.warning(
-                    f"ROI2 gray value is 0.0: rel_coords=({rel_x1},{rel_y1})->({rel_x2},{rel_y2}), "
-                    f"size={roi2_width}x{roi2_height}, pixels={total_pixels}, sum={total_sum}, "
-                    f"histogram_0={histogram[0] if histogram else 'N/A'}"
-                )
-            else:
-                self._logger.debug(
-                    f"ROI2 gray value calculated: {average_gray:.2f} "
-                    f"(rel_coords=({rel_x1},{rel_y1})->({rel_x2},{rel_y2}), size={roi2_width}x{roi2_height}, pixels={total_pixels})"
-                )
-
+            
             # 调整ROI2图像大小到标准尺寸（200x150用于显示）
             try:
                 roi2_resized = roi2_image.resize((200, 150), Image.Resampling.LANCZOS)
@@ -481,17 +436,7 @@ class RoiCaptureService:
             if non_zero_pixels == 0:
                 self._logger.warning(f"ROI2 image appears to be completely black: {total_pixels} pixels, 0 non-zero, "
                                     f"calculated_gray={average_gray:.2f} - MISMATCH DETECTED!")
-            else:
-                # 验证灰度值计算与实际图像内容的一致性
-                pixel_values = [sum(p) for p in roi2_resized.getdata()]  # RGB转灰度值
-                actual_average = sum(pixel_values) / len(pixel_values)
-                difference = abs(average_gray - actual_average)
-                if difference > 1.0:
-                    self._logger.warning(f"ROI2 gray value MISMATCH: calculated={average_gray:.2f}, "
-                                        f"actual={actual_average:.2f}, diff={difference:.2f}")
-                self._logger.debug(f"ROI2 image has {non_zero_pixels}/{total_pixels} non-zero pixels, "
-                                 f"actual_gray={actual_average:.2f}")
-
+            
             roi2_data = RoiData(
                 width=roi2_width,
                 height=roi2_height,

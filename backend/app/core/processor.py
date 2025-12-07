@@ -82,44 +82,23 @@ class DataProcessor:
                 # 使用双ROI数据：ROI2用于峰值检测，ROI1用于显示
                 roi1_data, roi2_data = roi_capture_service.capture_dual_roi(roi_config)
 
-                # 添加ROI2数据源诊断日志
-                if roi2_data and roi1_data:
-                    self.logger.debug(f"Frame {self._frame_count}: Dual ROI capture successful - "
-                                    f"ROI1 gray={roi1_data.gray_value:.2f}, ROI2 gray={roi2_data.gray_value:.2f}")
-                elif roi1_data and not roi2_data:
-                    self.logger.warning(f"Frame {self._frame_count}: ROI2 capture failed, only ROI1 available "
-                                       f"(gray={roi1_data.gray_value:.2f})")
-                elif not roi1_data and roi2_data:
-                    self.logger.warning(f"Frame {self._frame_count}: ROI1 capture failed, only ROI2 available "
-                                       f"(gray={roi2_data.gray_value:.2f})")
-                else:
-                    self.logger.error(f"Frame {self._frame_count}: Both ROI1 and ROI2 capture failed")
-
+                
                 if roi2_data and roi2_data.gray_value > 0:
                     # 使用ROI2（50x50中心区域）进行峰值检测
                     signal_value = roi2_data.gray_value
                     data_source = "ROI2"
-                    self.logger.debug(f"Frame {self._frame_count}: Using ROI2 data for peak detection "
-                                    f"(gray={signal_value:.2f}, source={data_source})")
                 elif roi2_data and roi2_data.gray_value == 0.0:
-                    # ROI2有数据但灰度值为0，记录详细信息
-                    roi2_pixels = roi2_data.get("pixels", "")
+                    # ROI2有数据但灰度值为0
                     signal_value = roi2_data.gray_value
                     data_source = "ROI2_Zero"
-                    self.logger.warning(f"Frame {self._frame_count}: ROI2 gray value is 0.0 "
-                                        f"(pixels_type={'text' if roi2_pixels.startswith('roi') else 'image'})")
                 elif roi1_data and roi1_data.gray_value > 0:
                     # ROI2失败但ROI1成功，回退到ROI1
                     signal_value = roi1_data.gray_value
                     data_source = "ROI1_Fallback"
-                    self.logger.info(f"Frame {self._frame_count}: ROI2 failed, falling back to ROI1 "
-                                    f"(gray={signal_value:.2f}, source={data_source})")
                 else:
                     # 双ROI截图失败，回退到模拟数据
                     signal_value = base_value + 10.0 * math.sin(2 * math.pi * 0.5 * t)
                     data_source = "Fallback"
-                    self.logger.warning(f"Frame {self._frame_count}: Both ROIs failed, using fallback data "
-                                        f"(value={signal_value:.2f}, source={data_source})")
             else:
                 # 使用模拟数据
                 signal_value = base_value + 10.0 * math.sin(2 * math.pi * 0.5 * t)

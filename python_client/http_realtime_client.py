@@ -824,12 +824,12 @@ class HTTPRealtimeClientUI(tk.Tk):
                 else:
                     display_text = f"ROI2: 异常({roi2_gray_value:.1f})"
                     color = "orange"
-                logger.warning(f"ROI2 in error state: {roi2_pixels}, gray={roi2_gray_value:.1f}")
+                logger.debug(f"ROI2 in error state: {roi2_pixels}, gray={roi2_gray_value:.1f}")
             elif roi2_gray_value == 0.0:
                 # ROI2灰度值为0，可能是有效数据或回退数据
                 display_text = f"ROI2: {roi2_gray_value:.1f}"
                 color = "orange"
-                logger.warning(f"ROI2 gray value is 0.0: pixels_type={'text' if roi2_pixels.startswith('roi') else 'image'}")
+                logger.debug(f"ROI2 gray value is 0.0: pixels_type={'text' if roi2_pixels.startswith('roi') else 'image'}")
             else:
                 # ROI2数据正常
                 display_text = f"ROI2: {roi2_gray_value:.1f}"
