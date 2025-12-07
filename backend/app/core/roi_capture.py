@@ -275,6 +275,9 @@ class RoiCaptureService:
     def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData) -> Optional[RoiData]:
         """从ROI1数据中提取ROI2（50x50中心区域）"""
         try:
+            self._logger.info(f"Extracting ROI2 from ROI1: ROI1 config=({roi1_config.x1},{roi1_config.y1})->({roi1_config.x2},{roi1_config.y2}), "
+                             f"size={roi1_config.width}x{roi1_config.height}")
+
             # 计算ROI2在ROI1中的坐标（50x50中心）
             roi1_center_x = roi1_config.width // 2
             roi1_center_y = roi1_config.height // 2
@@ -286,11 +289,23 @@ class RoiCaptureService:
             roi2_x2 = min(roi1_config.width, roi2_x1 + roi2_size)
             roi2_y2 = min(roi1_config.height, roi2_y1 + roi2_size)
 
-            # 如果ROI1太小，调整ROI2大小
+            # 验证ROI2坐标的合理性
+            if roi2_x2 <= roi2_x1 or roi2_y2 <= roi2_y1:
+                self._logger.error(f"Invalid ROI2 coordinates calculated: roi2_x1={roi2_x1}, roi2_x2={roi2_x2}, "
+                                  f"roi2_y1={roi2_y1}, roi2_y2={roi2_y2}")
+                self._logger.error(f"ROI1 center: ({roi1_center_x},{roi1_center_y}), ROI1 size: {roi1_config.width}x{roi1_config.height}")
+                return None
+
+            # 如果ROI1太小，调整ROI2大小到可用最大尺寸
             if roi2_x2 - roi2_x1 < 50 or roi2_y2 - roi2_y1 < 50:
-                self._logger.warning("ROI1 too small for 50x50 ROI2, using maximum available size")
-                roi2_x2 = min(roi1_config.width, roi2_x1 + (roi2_x2 - roi2_x1))
-                roi2_y2 = min(roi1_config.height, roi2_y1 + (roi2_y2 - roi2_y1))
+                actual_width = roi2_x2 - roi2_x1
+                actual_height = roi2_y2 - roi2_y1
+                self._logger.warning(f"ROI1 too small for 50x50 ROI2, using available size: "
+                                    f"{actual_width}x{actual_height}")
+                # 不需要调整坐标，已经计算好了最大可用尺寸
+
+            self._logger.debug(f"ROI2 coordinates calculated: ({roi2_x1},{roi2_y1})->({roi2_x2},{roi2_y2}) "
+                             f"size={(roi2_x2-roi2_x1)}x{(roi2_y2-roi2_y1)}")
 
             # 从base64解码ROI1图像
             import base64
@@ -306,17 +321,144 @@ class RoiCaptureService:
             image_data = base64.b64decode(base64_data)
             roi1_image = Image.open(BytesIO(image_data))
 
-            # 裁剪ROI2区域
-            roi2_image = roi1_image.crop((roi2_x1, roi2_y1, roi2_x2, roi2_y2))
+            # 添加ROI1图像整体诊断
+            roi1_gray = roi1_image.convert('L')
+            roi1_hist = roi1_gray.histogram()
+            roi1_min = min(i for i, count in enumerate(roi1_hist) if count > 0)
+            roi1_max = max(i for i, count in enumerate(roi1_hist) if count > 0)
+            roi1_nonzero = sum(roi1_hist[1:])  # 排除0值的像素数量
+            roi1_total = sum(roi1_hist)
+            self._logger.info(f"ROI1 overall pixel stats: min={roi1_min}, max={roi1_max}, "
+                             f"non_zero_pixels={roi1_nonzero}/{roi1_total} "
+                             f"({(roi1_nonzero/roi1_total)*100:.1f}%)")
+
+            # 如果ROI1图像大部分是黑色，记录警告
+            if roi1_nonzero < roi1_total * 0.01:  # 少于1%的非零像素
+                self._logger.warning("ROI1 image appears to be mostly black - check ROI configuration")
+
+            # 检查ROI1中ROI2区域的像素值分布
+            roi1_gray = roi1_image.convert('L')
+            roi2_region_pixels = []
+
+            # 初始化相对坐标变量
+            rel_x1 = rel_y1 = rel_x2 = rel_y2 = 0
+
+            # 将ROI2坐标从屏幕空间转换到ROI1图像空间
+            # ROI1屏幕坐标: (roi1_config.x1, roi1_config.y1)->(roi1_config.x2, roi1_config.y2)
+            # ROI1图像尺寸: roi1_gray.size (已调整大小)
+            roi1_screen_width = roi1_config.x2 - roi1_config.x1
+            roi1_screen_height = roi1_config.y2 - roi1_config.y1
+
+            # 计算缩放比例
+            scale_x = roi1_gray.width / roi1_screen_width
+            scale_y = roi1_gray.height / roi1_screen_height
+
+            # ROI2中心点在ROI1中的相对位置
+            roi2_center_x = (roi2_x1 + roi2_x2) // 2 - roi1_config.x1
+            roi2_center_y = (roi2_y1 + roi2_y2) // 2 - roi1_config.y1
+
+            # 转换到图像坐标并缩放
+            rel_center_x = int(roi2_center_x * scale_x)
+            rel_center_y = int(roi2_center_y * scale_y)
+
+            # ROI2在图像中的尺寸 (保持50x50或按比例缩放)
+            roi2_image_size = min(50, min(roi1_gray.width, roi1_gray.height) // 4)
+            rel_x1 = max(0, rel_center_x - roi2_image_size // 2)
+            rel_y1 = max(0, rel_center_y - roi2_image_size // 2)
+            rel_x2 = min(roi1_gray.width, rel_x1 + roi2_image_size)
+            rel_y2 = min(roi1_gray.height, rel_y1 + roi2_image_size)
+
+            self._logger.info(f"ROI2 coordinate transformation: screen_center=({roi2_center_x},{roi2_center_y}) "
+                             f"scale=({scale_x:.2f},{scale_y:.2f}) image_center=({rel_center_x},{rel_center_y})")
+            self._logger.info(f"ROI2 relative coordinates in ROI1 image: ({rel_x1},{rel_y1})->({rel_x2},{rel_y2})")
+            self._logger.info(f"ROI1 image dimensions: {roi1_gray.size}")
+
+            # 验证坐标范围
+            if (rel_x1 < 0 or rel_y1 < 0 or rel_x2 > roi1_gray.width or rel_y2 > roi1_gray.height):
+                self._logger.error(f"ROI2 coordinates exceed ROI1 image bounds: ROI1={roi1_gray.size}, ROI2_rel=({rel_x1},{rel_y1},{rel_x2},{rel_y2})")
+                # 使用安全的默认坐标而不是返回None
+                rel_x1, rel_y1 = 0, 0
+                rel_x2, rel_y2 = min(50, roi1_gray.width), min(50, roi1_gray.height)
+                self._logger.warning(f"Using fallback ROI2 coordinates: ({rel_x1},{rel_y1})->({rel_x2},{rel_y2})")
+
+            # 使用相对坐标采样ROI2区域的像素
+            for y in range(rel_y1, rel_y2):
+                for x in range(rel_x1, rel_x2):
+                    if 0 <= x < roi1_gray.width and 0 <= y < roi1_gray.height:
+                        roi2_region_pixels.append(roi1_gray.getpixel((x, y)))
+                    else:
+                        self._logger.warning(f"Pixel coordinate out of bounds: ({x},{y}) in image size {roi1_gray.size}")
+
+            if roi2_region_pixels:
+                roi2_region_min = min(roi2_region_pixels)
+                roi2_region_max = max(roi2_region_pixels)
+                roi2_region_avg = sum(roi2_region_pixels) / len(roi2_region_pixels)
+                non_zero_count = sum(1 for p in roi2_region_pixels if p > 0)
+
+                self._logger.info(f"ROI1 center region (ROI2 area) pixel stats: min={roi2_region_min}, max={roi2_region_max}, avg={roi2_region_avg:.2f}")
+                self._logger.info(f"ROI1 center region non-zero pixels: {non_zero_count}/{len(roi2_region_pixels)} ({(non_zero_count/len(roi2_region_pixels))*100:.1f}%)")
+
+                if roi2_region_max == 0:
+                    self._logger.warning("ROI1 center region is completely black - ROI2 area will be black")
+
+                    # 详细分析ROI1图像的灰度值分布
+                    roi1_all_pixels = list(roi1_gray.getdata())
+                    roi1_unique_values = sorted(set(roi1_all_pixels))
+                    roi1_non_zero_total = sum(1 for p in roi1_all_pixels if p > 0)
+
+                    self._logger.info(f"ROI1 complete analysis: total_pixels={len(roi1_all_pixels)}, "
+                                     f"non_zero={roi1_non_zero_total}, unique_values={len(roi1_unique_values)}")
+                    self._logger.info(f"ROI1 gray value range: {min(roi1_unique_values)}-{max(roi1_unique_values)}")
+                    self._logger.info(f"ROI1 sample gray values: {roi1_unique_values[:20]}")
+
+                    # 检查ROI1图像的亮区分布
+                    if roi1_non_zero_total > 0:
+                        bright_pixels = [p for p in roi1_all_pixels if p > 50]  # 灰度值大于50的像素
+                        self._logger.info(f"ROI1 bright pixels (>50): {len(bright_pixels)} pixels, "
+                                       f"avg={sum(bright_pixels)/len(bright_pixels):.1f if bright_pixels else 0}")
+
+                        # 建议调整ROI配置
+                        self._logger.warning("SUGGESTION: Current ROI1 region contains mostly black content. "
+                                           "Consider adjusting ROI coordinates to capture an area with actual screen content.")
+                else:
+                    self._logger.debug("ROI1 center region has valid pixel data")
+
+                    # 显示一些样本像素值
+                    sample_pixels = roi2_region_pixels[:20]
+                    self._logger.info(f"ROI2 area sample pixels: {sample_pixels}")
+            else:
+                self._logger.error("Failed to sample ROI2 region pixels from ROI1")
+
+            # 裁剪ROI2区域 - 使用相对坐标
+            roi2_image = roi1_image.crop((rel_x1, rel_y1, rel_x2, rel_y2))
+
+            # 添加ROI2图像调试日志
+            roi2_original_size = (roi2_x2 - roi2_x1, roi2_y2 - roi2_y1)
+            roi2_actual_size = (rel_x2 - rel_x1, rel_y2 - rel_y1)
+            roi2_mode = roi2_image.mode
+            self._logger.debug(f"ROI2 image cropped: original_size={roi2_original_size}, actual_size={roi2_actual_size}, mode={roi2_mode}")
 
             # 计算ROI2平均灰度值
             gray_roi2 = roi2_image.convert('L')
             histogram = gray_roi2.histogram()
-            roi2_width = roi2_x2 - roi2_x1
-            roi2_height = roi2_y2 - roi2_y1
+            roi2_width = rel_x2 - rel_x1
+            roi2_height = rel_y2 - rel_y1
             total_pixels = roi2_width * roi2_height
             total_sum = sum(i * count for i, count in enumerate(histogram))
             average_gray = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
+
+            # 添加ROI2灰度值诊断日志
+            if average_gray == 0.0:
+                self._logger.warning(
+                    f"ROI2 gray value is 0.0: rel_coords=({rel_x1},{rel_y1})->({rel_x2},{rel_y2}), "
+                    f"size={roi2_width}x{roi2_height}, pixels={total_pixels}, sum={total_sum}, "
+                    f"histogram_0={histogram[0] if histogram else 'N/A'}"
+                )
+            else:
+                self._logger.debug(
+                    f"ROI2 gray value calculated: {average_gray:.2f} "
+                    f"(rel_coords=({rel_x1},{rel_y1})->({rel_x2},{rel_y2}), size={roi2_width}x{roi2_height}, pixels={total_pixels})"
+                )
 
             # 调整ROI2图像大小到标准尺寸（200x150用于显示）
             try:
@@ -328,6 +470,27 @@ class RoiCaptureService:
             buffer = BytesIO()
             roi2_resized.save(buffer, format='PNG')
             roi2_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+            # 添加ROI2编码调试日志
+            roi2_base64_length = len(roi2_base64)
+            self._logger.debug(f"ROI2 encoded: resized_size={roi2_resized.size}, base64_length={roi2_base64_length}")
+
+            # 检查ROI2图像是否为全黑
+            non_zero_pixels = sum(1 for p in roi2_resized.getdata() if sum(p) > 0)
+            total_pixels = roi2_resized.size[0] * roi2_resized.size[1]
+            if non_zero_pixels == 0:
+                self._logger.warning(f"ROI2 image appears to be completely black: {total_pixels} pixels, 0 non-zero, "
+                                    f"calculated_gray={average_gray:.2f} - MISMATCH DETECTED!")
+            else:
+                # 验证灰度值计算与实际图像内容的一致性
+                pixel_values = [sum(p) for p in roi2_resized.getdata()]  # RGB转灰度值
+                actual_average = sum(pixel_values) / len(pixel_values)
+                difference = abs(average_gray - actual_average)
+                if difference > 1.0:
+                    self._logger.warning(f"ROI2 gray value MISMATCH: calculated={average_gray:.2f}, "
+                                        f"actual={actual_average:.2f}, diff={difference:.2f}")
+                self._logger.debug(f"ROI2 image has {non_zero_pixels}/{total_pixels} non-zero pixels, "
+                                 f"actual_gray={actual_average:.2f}")
 
             roi2_data = RoiData(
                 width=roi2_width,
@@ -347,106 +510,25 @@ class RoiCaptureService:
             return None
 
     def _capture_dual_roi_internal(self, roi_config: RoiConfig) -> Tuple[Optional[RoiData], Optional[RoiData]]:
-        """执行实际的双ROI截图操作"""
-        # 首先截取整个屏幕
-        screen = self.capture_screen()
-        if screen is None:
-            self._logger.error("Failed to capture screen for dual ROI")
+        """执行实际的双ROI截图操作 - 统一从ROI1图像中提取ROI2"""
+        self._logger.debug("Starting unified dual ROI capture - always extract ROI2 from ROI1 image")
+
+        # 首先捕获ROI1
+        roi1_data = self._capture_roi_internal(roi_config)
+        if roi1_data is None:
+            self._logger.error("Failed to capture ROI1, cannot extract ROI2")
             return None, None
 
-        # 检查ROI1是否在屏幕范围内
-        screen_width, screen_height = screen.size
-        if (roi_config.x2 > screen_width or roi_config.y2 > screen_height or
-            roi_config.x1 < 0 or roi_config.y1 < 0):
-            self._logger.warning(
-                "ROI1 coordinates exceed screen bounds. Screen: %dx%d, ROI1: (%d,%d)->(%d,%d)",
-                screen_width, screen_height,
-                roi_config.x1, roi_config.y1, roi_config.x2, roi_config.y2
-            )
-            # 自动调整到屏幕范围内
-            x1 = max(0, min(roi_config.x1, screen_width - 1))
-            y1 = max(0, min(roi_config.y1, screen_height - 1))
-            x2 = max(x1 + 1, min(roi_config.x2, screen_width))
-            y2 = max(y1 + 1, min(roi_config.y2, screen_height))
-        else:
-            x1, y1, x2, y2 = roi_config.x1, roi_config.y1, roi_config.x2, roi_config.y2
-
-        # 截取ROI1区域
-        roi1_image = screen.crop((x1, y1, x2, y2))
-
-        # 计算ROI1平均灰度值
-        gray_roi1 = roi1_image.convert('L')
-        histogram = gray_roi1.histogram()
-        total_pixels = roi_config.width * roi_config.height
-        total_sum = sum(i * count for i, count in enumerate(histogram))
-        average_gray1 = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
-
-        # 计算ROI2在屏幕上的坐标（从ROI1中心截取50x50）
-        roi1_center_x_screen = x1 + (x2 - x1) // 2
-        roi1_center_y_screen = y1 + (y2 - y1) // 2
-        roi2_size = 50
-
-        # ROI2的屏幕坐标
-        roi2_x1 = max(x1, roi1_center_x_screen - roi2_size // 2)
-        roi2_y1 = max(y1, roi1_center_y_screen - roi2_size // 2)
-        roi2_x2 = min(x2, roi2_x1 + roi2_size)
-        roi2_y2 = min(y2, roi2_y1 + roi2_size)
-
-        # 如果ROI1太小，调整ROI2
-        if roi2_x2 - roi2_x1 < 50 or roi2_y2 - roi2_y1 < 50:
-            roi2_x2 = min(x2, roi2_x1 + (roi2_x2 - roi2_x1))
-            roi2_y2 = min(y2, roi2_y1 + (roi2_y2 - roi2_y1))
-
-        # 从屏幕截取ROI2区域
-        roi2_image = screen.crop((roi2_x1, roi2_y1, roi2_x2, roi2_y2))
-
-        # 计算ROI2平均灰度值
-        gray_roi2 = roi2_image.convert('L')
-        histogram2 = gray_roi2.histogram()
-        roi2_width = roi2_x2 - roi2_x1
-        roi2_height = roi2_y2 - roi2_y1
-        total_pixels2 = roi2_width * roi2_height
-        total_sum2 = sum(i * count for i, count in enumerate(histogram2))
-        average_gray2 = float(total_sum2 / total_pixels2) if total_pixels2 > 0 else 0.0
-
-        # 调整图像大小到标准尺寸（200x150）
-        try:
-            roi1_resized = roi1_image.resize((200, 150), Image.Resampling.LANCZOS)
-            roi2_resized = roi2_image.resize((200, 150), Image.Resampling.LANCZOS)
-        except AttributeError:
-            roi1_resized = roi1_image.resize((200, 150), Image.LANCZOS)
-            roi2_resized = roi2_image.resize((200, 150), Image.LANCZOS)
-
-        # 转换为base64
-        buffer1 = io.BytesIO()
-        roi1_resized.save(buffer1, format='PNG')
-        roi1_base64 = base64.b64encode(buffer1.getvalue()).decode('utf-8')
-
-        buffer2 = io.BytesIO()
-        roi2_resized.save(buffer2, format='PNG')
-        roi2_base64 = base64.b64encode(buffer2.getvalue()).decode('utf-8')
-
-        # 创建ROI数据
-        roi1_data = RoiData(
-            width=roi_config.width,
-            height=roi_config.height,
-            pixels=f"data:image/png;base64,{roi1_base64}",
-            gray_value=average_gray1,
-            format="base64"
-        )
-
-        roi2_data = RoiData(
-            width=roi2_width,
-            height=roi2_height,
-            pixels=f"data:image/png;base64,{roi2_base64}",
-            gray_value=average_gray2,
-            format="base64"
-        )
+        # 然后从ROI1图像中提取ROI2 - 使用统一的方法
+        roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data)
+        if roi2_data is None:
+            self._logger.error("Failed to extract ROI2 from ROI1 image")
+            # 仍然返回ROI1数据，让系统可以继续工作
+            return roi1_data, None
 
         self._logger.debug(
-            "Dual ROI captured successfully: ROI1=%dx%d(gray=%.2f), ROI2=%dx%d(gray=%.2f)",
-            roi_config.width, roi_config.height, average_gray1,
-            roi2_width, roi2_height, average_gray2
+            "Unified dual ROI capture successful: ROI1=%.2f, ROI2=%.2f",
+            roi1_data.gray_value, roi2_data.gray_value
         )
 
         return roi1_data, roi2_data

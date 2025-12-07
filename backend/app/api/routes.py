@@ -360,9 +360,8 @@ async def dual_realtime_data(
         # 使用双ROI截图服务
         roi1_data, roi2_data = roi_capture_service.capture_dual_roi(roi_config)
 
-        if roi1_data is None or roi2_data is None:
-            # 双ROI截图失败
-            logger.warning("Dual ROI capture failed, returning empty data")
+        if roi1_data is None:
+            logger.error("ROI1 capture failed")
             roi1_data = RoiData(
                 width=roi_config.width,
                 height=roi_config.height,
@@ -370,22 +369,39 @@ async def dual_realtime_data(
                 gray_value=baseline,
                 format="text",
             )
+            current_value = baseline
+            data_source = "ROI1_Failed"
+
+        if roi2_data is None:
+            logger.error("ROI2 extraction failed - using ROI1 gray value as fallback")
+            # ROI2失败时，使用ROI1的灰度值而不是baseline
+            roi2_fallback_gray = roi1_data.gray_value if roi1_data else baseline
             roi2_data = RoiData(
                 width=50,
                 height=50,
-                pixels="roi2_capture_failed",
-                gray_value=baseline,
+                pixels="roi2_extract_failed",
+                gray_value=roi2_fallback_gray,
                 format="text",
             )
-            current_value = baseline
-            data_source = "Failed"
+            current_value = roi2_fallback_gray
+            data_source = "ROI2_Fallback"
+            logger.warning(f"ROI2 failed, using ROI1 gray value: {roi2_fallback_gray:.2f}")
         else:
-            # 双ROI截图成功，使用ROI2的灰度值作为主要数据源
-            current_value = roi2_data.gray_value
-            data_source = "DualROI"
+            # 双ROI截图成功，验证ROI2灰度值
+            if roi2_data.gray_value == 0.0:
+                logger.warning("ROI2 gray value is 0.0 - using ROI1 gray value as fallback")
+                roi2_data.gray_value = roi1_data.gray_value if roi1_data else baseline
+                current_value = roi2_data.gray_value
+                data_source = "ROI2_ZeroFallback"
+            else:
+                # ROI2数据有效
+                current_value = roi2_data.gray_value
+                data_source = "DualROI"
+                logger.debug(f"ROI2 data valid: gray={roi2_data.gray_value:.2f}, source={data_source}")
 
     except Exception as e:
         logger.error("Error capturing dual ROI in dual_realtime_data: %s", str(e))
+        # 异常情况下也尝试提供有意义的灰度值而不是baseline
         roi1_data = RoiData(
             width=roi_config.width,
             height=roi_config.height,
@@ -393,15 +409,17 @@ async def dual_realtime_data(
             gray_value=baseline,
             format="text",
         )
+        # 在异常情况下，使用baseline作为ROI2的灰度值，但记录详细信息
         roi2_data = RoiData(
             width=50,
             height=50,
             pixels="roi2_capture_error",
-            gray_value=baseline,
+            gray_value=baseline,  # 使用baseline作为最后的回退
             format="text",
         )
         current_value = baseline
         data_source = "Error"
+        logger.error(f"Exception occurred, using baseline value: {baseline:.2f}")
 
     # 生成时间序列数据
     series = []

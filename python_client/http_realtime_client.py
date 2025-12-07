@@ -807,10 +807,42 @@ class HTTPRealtimeClientUI(tk.Tk):
             roi1_height = roi1_data.get("height", 0)
             roi2_gray_value = roi2_data.get("gray_value", 0)
 
-            self.roi_resolution_label.config(text=f"ROI1: {roi1_width}x{roi1_height}")
-            self.roi_gray_value_label.config(text=f"ROI2: {roi2_gray_value:.1f}")
+            # 增强ROI2显示逻辑，区分正常和错误状态
+            roi2_pixels = roi2_data.get("pixels", "")
 
-            logger.info(f"✅ ROI updated via callback: ROI1={roi1_width}x{roi1_height}, ROI2 gray={roi2_gray_value:.1f}")
+            if roi2_pixels.startswith("roi2_"):
+                # ROI2提取失败或错误状态
+                if roi2_pixels == "roi2_capture_failed":
+                    display_text = "ROI2: 截取失败"
+                    color = "red"
+                elif roi2_pixels == "roi2_extract_failed":
+                    display_text = "ROI2: 提取失败"
+                    color = "orange"
+                elif roi2_pixels == "roi2_capture_error":
+                    display_text = "ROI2: 错误"
+                    color = "red"
+                else:
+                    display_text = f"ROI2: 异常({roi2_gray_value:.1f})"
+                    color = "orange"
+                logger.warning(f"ROI2 in error state: {roi2_pixels}, gray={roi2_gray_value:.1f}")
+            elif roi2_gray_value == 0.0:
+                # ROI2灰度值为0，可能是有效数据或回退数据
+                display_text = f"ROI2: {roi2_gray_value:.1f}"
+                color = "orange"
+                logger.warning(f"ROI2 gray value is 0.0: pixels_type={'text' if roi2_pixels.startswith('roi') else 'image'}")
+            else:
+                # ROI2数据正常
+                display_text = f"ROI2: {roi2_gray_value:.1f}"
+                color = "green"
+                logger.debug(f"ROI2 data normal: gray={roi2_gray_value:.1f}")
+
+            # 显示ROI1灰度值信息，帮助诊断ROI2问题
+            roi1_gray_value = roi1_data.get("gray_value", 0)
+            roi1_info = f"ROI1: {roi1_width}x{roi1_height}"
+            if roi1_gray_value > 0:
+                roi1_info += f" (灰度:{roi1_gray_value:.1f})"
+            self.roi_resolution_label.config(text=roi1_info)
+            self.roi_gray_value_label.config(text=display_text, foreground=color)
 
         except Exception as e:
             logger.error(f"❌ Error in ROI update callback: {e}")
@@ -943,8 +975,27 @@ class HTTPRealtimeClientUI(tk.Tk):
             if roi2_base64.startswith("data:image/png;base64,"):
                 logger.debug("Processing ROI2 image...")
                 roi2_base64_data = roi2_base64.split("data:image/png;base64,")[1]
+
+                # 添加Base64解码调试日志
                 roi2_image_data = base64.b64decode(roi2_base64_data)
+                roi2_data_size = len(roi2_image_data)
+                logger.debug(f"ROI2 base64 decoded: size={roi2_data_size} bytes")
+
                 roi2_image = Image.open(io.BytesIO(roi2_image_data))
+                roi2_original_size = roi2_image.size
+                roi2_mode = roi2_image.mode
+                logger.debug(f"ROI2 image loaded: size={roi2_original_size}, mode={roi2_mode}")
+
+                # 检查ROI2图像内容
+                roi2_pixel_stats = list(roi2_image.getextrema())
+                logger.debug(f"ROI2 pixel stats (RGB): {roi2_pixel_stats}")
+
+                # 检查是否为灰度图像
+                if roi2_mode == 'L':
+                    min_val, max_val = roi2_image.getextrema()
+                    logger.debug(f"ROI2 grayscale range: {min_val} - {max_val}")
+                    if max_val == 0:
+                        logger.warning("ROI2 image appears to be all black (grayscale)")
 
                 # 调整ROI2图像大小
                 try:
@@ -952,6 +1003,17 @@ class HTTPRealtimeClientUI(tk.Tk):
                 except AttributeError:
                     # 兼容旧版本PIL
                     roi2_resized = roi2_image.resize((250, 188), Image.LANCZOS)
+
+                roi2_resized_size = roi2_resized.size
+                logger.debug(f"ROI2 resized to: {roi2_resized_size}")
+
+                # 检查调整大小后的图像
+                if roi2_resized.mode == 'L':
+                    min_val, max_val = roi2_resized.getextrema()
+                    logger.debug(f"ROI2 resized range: {min_val} - {max_val}")
+                    if max_val == 0:
+                        logger.warning("ROI2 resized image appears to be all black")
+
                 roi2_photo = ImageTk.PhotoImage(roi2_resized)
 
                 # 更新右侧ROI显示
@@ -967,10 +1029,39 @@ class HTTPRealtimeClientUI(tk.Tk):
             roi1_height = roi1_data.get("height", 0)
             roi2_gray_value = roi2_data.get("gray_value", 0)
 
-            self.roi_resolution_label.config(text=f"ROI1: {roi1_width}x{roi1_height}")
-            self.roi_gray_value_label.config(text=f"ROI2: {roi2_gray_value:.1f}")
+            # 增强ROI2显示逻辑（与上方逻辑保持一致）
+            roi2_pixels = roi2_data.get("pixels", "")
 
-            logger.debug(f"✅ Dual ROI info updated: ROI1={roi1_width}x{roi1_height}, ROI2 gray={roi2_gray_value:.1f}")
+            if roi2_pixels.startswith("roi2_"):
+                # ROI2提取失败或错误状态
+                if roi2_pixels == "roi2_capture_failed":
+                    display_text = "ROI2: 截取失败"
+                    color = "red"
+                elif roi2_pixels == "roi2_extract_failed":
+                    display_text = "ROI2: 提取失败"
+                    color = "orange"
+                elif roi2_pixels == "roi2_capture_error":
+                    display_text = "ROI2: 错误"
+                    color = "red"
+                else:
+                    display_text = f"ROI2: 异常({roi2_gray_value:.1f})"
+                    color = "orange"
+            elif roi2_gray_value == 0.0:
+                display_text = f"ROI2: {roi2_gray_value:.1f}"
+                color = "orange"
+            else:
+                display_text = f"ROI2: {roi2_gray_value:.1f}"
+                color = "green"
+
+            # 显示ROI1灰度值信息，帮助诊断ROI2问题
+            roi1_gray_value = roi1_data.get("gray_value", 0)
+            roi1_info = f"ROI1: {roi1_width}x{roi1_height}"
+            if roi1_gray_value > 0:
+                roi1_info += f" (灰度:{roi1_gray_value:.1f})"
+            self.roi_resolution_label.config(text=roi1_info)
+            self.roi_gray_value_label.config(text=display_text, foreground=color)
+
+            logger.debug(f"✅ Dual ROI info updated: ROI1={roi1_width}x{roi1_height}, ROI2 gray={roi2_gray_value:.1f}, status={color}")
 
         except Exception as e:
             logger.error(f"❌ Error updating dual ROI displays: {e}")
