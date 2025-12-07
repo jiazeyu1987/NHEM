@@ -206,6 +206,9 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.btn_save = None
         self.btn_capture = None
 
+        # ROI图像缓存
+        self._last_image = None
+
         # 构建UI
         self._build_widgets()
         self._setup_plotter()
@@ -382,10 +385,28 @@ class HTTPRealtimeClientUI(tk.Tk):
         roi_frame = ttk.LabelFrame(self.info_frame, text="ROI Screenshot")
         roi_frame.pack(fill="x", padx=8, pady=4)
 
-        # 创建ROI截图标签
-        self.roi_label = ttk.Label(roi_frame, text="Waiting for ROI data...",
-                                   relief="sunken", background="white")
-        self.roi_label.pack(fill="x", pady=4)
+        # 创建ROI双显示容器
+        roi_container = ttk.Frame(roi_frame)
+        roi_container.pack(fill="x", pady=4)
+
+        # 左侧ROI显示
+        self.roi_label_left = ttk.Label(roi_container, text="Waiting for ROI data...",
+                                        relief="sunken", background="white")
+        self.roi_label_left.pack(side="left", fill="both", expand=True, padx=(0, 2))
+
+        # 分隔符
+        separator_label = ttk.Label(roi_container, text="|",
+                                   font=("Arial", 16, "bold"),
+                                   foreground="gray")
+        separator_label.pack(side="left", padx=2)
+
+        # 右侧ROI显示
+        self.roi_label_right = ttk.Label(roi_container, text="Waiting for ROI data...",
+                                         relief="sunken", background="white")
+        self.roi_label_right.pack(side="left", fill="both", expand=True, padx=(2, 0))
+
+        # 保持对原始标签的引用（向后兼容）
+        self.roi_label = self.roi_label_left
 
         # ROI信息
         roi_info = ttk.Frame(roi_frame)
@@ -742,11 +763,15 @@ class HTTPRealtimeClientUI(tk.Tk):
 
                             # 调整图像大小以适应显示区域
                             image = image.resize((200, 150), Image.Resampling.LANCZOS)
+
+                            # 保存PIL Image对象供后续使用
+                            self._last_image = image
+
+                            # 创建PhotoImage对象
                             photo = ImageTk.PhotoImage(image)
 
-                            # 更新标签显示
-                            self.roi_label.config(image=photo, text="")
-                            self.roi_label.image = photo  # 保持引用避免垃圾回收
+                            # 更新双ROI标签显示
+                            self._update_roi_displays(photo)
 
                             # 更新ROI信息
                             width = roi_data.get("width", 0)
@@ -757,23 +782,62 @@ class HTTPRealtimeClientUI(tk.Tk):
                             self.roi_gray_value_label.config(text=f"{gray_value:.1f}")
 
                         else:
-                            self.roi_label.config(text="Invalid ROI data format", image="")
+                            self._update_roi_displays_error("Invalid ROI data format")
                     else:
-                        self.roi_label.config(text="No ROI data available", image="")
+                        self._update_roi_displays_error("No ROI data available")
                         self.roi_resolution_label.config(text="N/A")
                         self.roi_gray_value_label.config(text="N/A")
                 else:
-                    self.roi_label.config(text="Invalid data type", image="")
+                    self._update_roi_displays_error("Invalid data type")
             else:
-                self.roi_label.config(text="Failed to get ROI data", image="")
+                self._update_roi_displays_error("Failed to get ROI data")
 
         except Exception as e:
-            self.roi_label.config(text=f"Error: {str(e)}", image="")
+            self._update_roi_displays_error(f"Error: {str(e)}")
             print(f"ROI update error: {e}")
 
         # 每500ms更新一次 (2 FPS)
         if self.connected:
             self.after(500, self.update_roi_screenshot)
+
+    def _update_roi_displays(self, photo):
+        """更新左右两个ROI显示"""
+        # 更新左侧ROI显示
+        self.roi_label_left.config(image=photo, text="")
+        self.roi_label_left.image = photo  # 保持引用避免垃圾回收
+
+        # 创建右侧的PhotoImage副本以确保两个widget都能正常显示
+        # PhotoImage对象需要在每个widget中保持独立的引用
+        if hasattr(self, '_last_image'):
+            # 重用上次的PIL Image对象来创建新的PhotoImage
+            right_photo = ImageTk.PhotoImage(self._last_image)
+        else:
+            # 如果没有保存的Image对象，使用当前photo创建副本
+            # 这种情况下，我们需要从photo重建PIL Image
+            try:
+                # 获取原始图像数据并创建新的PhotoImage
+                right_photo = ImageTk.PhotoImage(photo)
+            except:
+                # 如果无法创建副本，就使用同一个photo（可能会有显示问题）
+                right_photo = photo
+
+        # 更新右侧ROI显示
+        self.roi_label_right.config(image=right_photo, text="")
+        self.roi_label_right.right_image = right_photo  # 保持右侧引用
+
+    def _update_roi_displays_error(self, error_message):
+        """更新ROI显示错误状态"""
+        # 更新左侧ROI显示
+        self.roi_label_left.config(text=error_message, image="")
+        if hasattr(self.roi_label_left, 'image'):
+            self.roi_label_left.image = None
+
+        # 更新右侧ROI显示
+        self.roi_label_right.config(text=error_message, image="")
+        if hasattr(self.roi_label_right, 'image'):
+            self.roi_label_right.image = None
+        if hasattr(self.roi_label_right, 'right_image'):
+            self.roi_label_right.right_image = None
 
     def _capture_curve(self):
         """截取曲线数据"""
