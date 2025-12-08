@@ -41,6 +41,10 @@ class RoiCaptureService:
         self._cached_roi_data: Optional[RoiData] = None
         self._last_roi_config: Optional[RoiConfig] = None
 
+        # 绿线交点缓存机制
+        self._last_intersection_point: Optional[LineIntersectionPoint] = None
+        self._intersection_cache_valid = False
+
         self._logger.info("ROI Capture Service initialized with JSON config: frame_rate=%d, update_interval=%.1f",
                          self._frame_rate, self._cache_interval)
 
@@ -52,6 +56,26 @@ class RoiCaptureService:
         self._last_roi_config = None
         self._last_capture_time = 0.0
         self._logger.debug("ROI cache cleared - next capture will be forced")
+
+    def _update_intersection_cache(self, intersection_point: Optional[LineIntersectionPoint]):
+        """更新绿线交点缓存"""
+        if intersection_point is not None:
+            self._last_intersection_point = intersection_point
+            self._intersection_cache_valid = True
+            self._logger.debug(f"Intersection cache updated: ROI({intersection_point.roi_x}, {intersection_point.roi_y}) Screen({intersection_point.x}, {intersection_point.y})")
+        else:
+            # 检测失败，保持现有缓存
+            self._logger.debug("No intersection detected, keeping existing cache")
+
+    def _invalidate_intersection_cache(self):
+        """清除绿线交点缓存"""
+        self._last_intersection_point = None
+        self._intersection_cache_valid = False
+        self._logger.debug("Intersection cache invalidated")
+
+    def get_last_intersection_point(self) -> Optional[LineIntersectionPoint]:
+        """获取最后缓存的交点坐标"""
+        return self._last_intersection_point if self._intersection_cache_valid else None
 
     def capture_screen(self) -> Optional[Image.Image]:
         """
@@ -138,8 +162,13 @@ class RoiCaptureService:
 
     def _roi_config_changed(self, current: RoiConfig, cached: RoiConfig) -> bool:
         """检查ROI配置是否发生变化"""
-        return (current.x1 != cached.x1 or current.y1 != cached.y1 or
-                current.x2 != cached.x2 or current.y2 != cached.y2)
+        changed = (current.x1 != cached.x1 or current.y1 != cached.y1 or
+                  current.x2 != cached.x2 or current.y2 != cached.y2)
+
+        if changed:
+            self._invalidate_intersection_cache()  # ROI变化时清除交点缓存
+
+        return changed
 
     def _capture_roi_internal(self, roi_config: RoiConfig) -> Optional[RoiData]:
         """执行实际的ROI截图操作"""
@@ -226,9 +255,18 @@ class RoiCaptureService:
                     confidence=1.0
                 )
                 self._logger.debug(f"Green line intersection detected at Screen({screen_x}, {screen_y}) ROI({roi_x}, {roi_y})")
+
+                # 更新交点缓存
+                self._update_intersection_cache(intersection_point)
             else:
                 print("ROI1: No green line intersection detected")
                 self._logger.debug("No green line intersection detected")
+
+                # 检测失败时，保持现有缓存，记录日志
+                if self._intersection_cache_valid:
+                    self._logger.debug(f"Using cached intersection point: ROI({self._last_intersection_point.roi_x}, {self._last_intersection_point.roi_y})")
+                else:
+                    self._logger.debug("No cached intersection point available")
 
         except Exception as e:
             self._logger.error(f"Green line detection failed: {str(e)}")
@@ -327,9 +365,24 @@ class RoiCaptureService:
 
                     # 添加ROI2历史帧（用于峰值检测）
                     if roi2_data:
+                        # 从ROI1交点信息计算ROI2坐标
+                        roi2_x1 = roi1_data.intersection.roi_x if roi1_data.intersection and roi1_data.intersection.roi_x is not None else None
+                        roi2_y1 = roi1_data.intersection.roi_y if roi1_data.intersection and roi1_data.intersection.roi_y is not None else None
+
+                        if roi2_x1 is not None and roi2_y1 is not None:
+                            roi2_config = self._calculate_roi2_screen_coordinates(roi_config, roi2_x1, roi2_y1)
+                        else:
+                            # Fallback to center-based calculation
+                            roi1_center_x = roi_config.width // 2
+                            roi1_center_y = roi_config.height // 2
+                            roi2_size = 50
+                            roi2_x1_fallback = roi1_center_x - roi2_size // 2
+                            roi2_y1_fallback = roi1_center_y - roi2_size // 2
+                            roi2_config = self._calculate_roi2_screen_coordinates(roi_config, roi2_x1_fallback, roi2_y1_fallback)
+
                         roi2_frame = data_store.add_roi_frame(
                             gray_value=roi2_data.gray_value,
-                            roi_config=self._create_roi2_config(roi_config),
+                            roi_config=roi2_config,
                             frame_count=main_frame_count,
                             capture_duration=self._cache_interval
                         )
@@ -348,37 +401,47 @@ class RoiCaptureService:
             self._logger.error("Failed to capture dual ROI: %s", str(e))
             return None, None
 
-    def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData) -> Optional[RoiData]:
-        """从ROI1数据中提取ROI2（50x50中心区域）"""
+    def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData, intersection_point: Optional[LineIntersectionPoint] = None) -> Optional[RoiData]:
+        """从ROI1数据中提取ROI2（50x50区域，基于绿线交点或中心点）"""
         try:
             self._logger.debug(f"Extracting ROI2 from ROI1: ROI1 config=({roi1_config.x1},{roi1_config.y1})->({roi1_config.x2},{roi1_config.y2}), "
                              f"size={roi1_config.width}x{roi1_config.height}")
 
-            # 计算ROI2在ROI1中的坐标（50x50中心）
-            roi1_center_x = roi1_config.width // 2
-            roi1_center_y = roi1_config.height // 2
+            # ROI2固定尺寸: 50x50
             roi2_size = 50
+            half_size = roi2_size // 2
+
+            # 确定ROI2中心点
+            if intersection_point is not None and intersection_point.roi_x is not None and intersection_point.roi_y is not None:
+                # 使用交点坐标
+                center_x = intersection_point.roi_x
+                center_y = intersection_point.roi_y
+                self._logger.debug(f"Using intersection point for ROI2: ROI({center_x}, {center_y})")
+            elif self._intersection_cache_valid and self._last_intersection_point is not None:
+                # 使用缓存的交点坐标
+                center_x = self._last_intersection_point.roi_x
+                center_y = self._last_intersection_point.roi_y
+                self._logger.debug(f"Using cached intersection point for ROI2: ROI({center_x}, {center_y})")
+            else:
+                # Fallback: 使用ROI1中心点
+                center_x = roi1_config.width // 2
+                center_y = roi1_config.height // 2
+                self._logger.debug(f"Using ROI1 center for ROI2: ({center_x}, {center_y})")
 
             # ROI2的起始和结束坐标（在ROI1内）
-            roi2_x1 = max(0, roi1_center_x - roi2_size // 2)
-            roi2_y1 = max(0, roi1_center_y - roi2_size // 2)
-            roi2_x2 = min(roi1_config.width, roi2_x1 + roi2_size)
-            roi2_y2 = min(roi1_config.height, roi2_y1 + roi2_size)
+            roi2_x1 = center_x - half_size
+            roi2_y1 = center_y - half_size
+            roi2_x2 = center_x + half_size
+            roi2_y2 = center_y + half_size
 
-            # 验证ROI2坐标的合理性
-            if roi2_x2 <= roi2_x1 or roi2_y2 <= roi2_y1:
-                self._logger.error(f"Invalid ROI2 coordinates calculated: roi2_x1={roi2_x1}, roi2_x2={roi2_x2}, "
-                                  f"roi2_y1={roi2_y1}, roi2_y2={roi2_y2}")
-                self._logger.error(f"ROI1 center: ({roi1_center_x},{roi1_center_y}), ROI1 size: {roi1_config.width}x{roi1_config.height}")
-                return None
+            # 边界检查 - 如果超出ROI1边界，返回错误状态
+            if (roi2_x1 < 0 or roi2_y1 < 0 or
+                roi2_x2 > roi1_config.width or roi2_y2 > roi1_config.height):
+                self._logger.warning(f"ROI2 {roi2_size}x{roi2_size} region at ({center_x}, {center_y}) exceeds ROI1 bounds: {roi1_config.width}x{roi1_config.height}")
+                self._logger.warning(f"ROI2 coordinates: ({roi2_x1}, {roi2_y1}) → ({roi2_x2}, {roi2_y2})")
+                raise ValueError("ROI2 region exceeds ROI1 boundaries")
 
-            # 如果ROI1太小，调整ROI2大小到可用最大尺寸
-            if roi2_x2 - roi2_x1 < 50 or roi2_y2 - roi2_y1 < 50:
-                actual_width = roi2_x2 - roi2_x1
-                actual_height = roi2_y2 - roi2_y1
-                self._logger.warning(f"ROI1 too small for 50x50 ROI2, using available size: "
-                                    f"{actual_width}x{actual_height}")
-                # 不需要调整坐标，已经计算好了最大可用尺寸
+            # ROI2坐标验证已通过边界检查，确保是精确的50x50尺寸
 
             self._logger.debug(f"ROI2 coordinates calculated: ({roi2_x1},{roi2_y1})->({roi2_x2},{roi2_y2}) "
                              f"size={(roi2_x2-roi2_x1)}x{(roi2_y2-roi2_y1)}")
@@ -532,6 +595,7 @@ class RoiCaptureService:
 
     def _capture_dual_roi_internal(self, roi_config: RoiConfig) -> Tuple[Optional[RoiData], Optional[RoiData]]:
         """执行实际的双ROI截图操作 - 统一从ROI1图像中提取ROI2"""
+        dual_roi_start_time = time.time()
         self._logger.debug("Starting unified dual ROI capture - always extract ROI2 from ROI1 image")
 
         # 首先捕获ROI1
@@ -540,33 +604,65 @@ class RoiCaptureService:
             self._logger.error("Failed to capture ROI1, cannot extract ROI2")
             return None, None
 
-        # 然后从ROI1图像中提取ROI2 - 使用统一的方法
-        roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data)
+        # 然后从ROI1图像中提取ROI2 - 基于交点坐标
+        roi2_extraction_start_time = time.time()
+        try:
+            roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data, roi1_data.intersection)
+
+            # 记录ROI2提取成功信息
+            roi2_extraction_time = (time.time() - roi2_extraction_start_time) * 1000
+            self._logger.debug(f"ROI2 extraction completed in {roi2_extraction_time:.2f}ms")
+
+            # 根据交点状态记录详细信息
+            if roi1_data.intersection and roi1_data.intersection.roi_x is not None:
+                self._logger.debug(f"ROI2 extracted based on intersection: ROI({roi1_data.intersection.roi_x}, {roi1_data.intersection.roi_y})")
+            elif self._intersection_cache_valid:
+                self._logger.debug(f"ROI2 extracted based on cached intersection: ROI({self._last_intersection_point.roi_x}, {self._last_intersection_point.roi_y})")
+            else:
+                self._logger.debug("ROI2 extracted based on ROI1 center (no intersection available)")
+
+        except ValueError as e:
+            # ROI2截取失败（如超出边界），创建错误状态
+            roi2_extraction_time = (time.time() - roi2_extraction_start_time) * 1000
+            self._logger.error(f"ROI2 extraction failed after {roi2_extraction_time:.2f}ms: {e}")
+
+            roi2_data = RoiData(
+                width=50,
+                height=50,
+                pixels="roi2_extraction_failed",
+                gray_value=roi1_data.gray_value,  # 使用ROI1灰度值作为fallback
+                format="text",
+                intersection=None
+            )
         if roi2_data is None:
             self._logger.error("Failed to extract ROI2 from ROI1 image")
             # 仍然返回ROI1数据，让系统可以继续工作
             return roi1_data, None
 
+        # 记录整体性能指标
+        dual_roi_total_time = (time.time() - dual_roi_start_time) * 1000
         self._logger.debug(
-            "Unified dual ROI capture successful: ROI1=%.2f, ROI2=%.2f",
-            roi1_data.gray_value, roi2_data.gray_value
+            "Unified dual ROI capture successful: ROI1=%.2f, ROI2=%.2f, total_time=%.2fms",
+            roi1_data.gray_value, roi2_data.gray_value, dual_roi_total_time
         )
+
+        # 性能监控 - 如果总时间过长，发出警告
+        if dual_roi_total_time > 300:  # 300ms阈值（比单独检测更宽松）
+            self._logger.warning(f"Dual ROI capture took {dual_roi_total_time:.2f}ms - may affect performance")
 
         return roi1_data, roi2_data
 
-    def _create_roi2_config(self, roi1_config: RoiConfig) -> RoiConfig:
-        """创建ROI2的配置对象"""
-        # ROI2在屏幕上的坐标
-        roi1_center_x = roi1_config.x1 + roi1_config.width // 2
-        roi1_center_y = roi1_config.y1 + roi1_config.height // 2
+    def _calculate_roi2_screen_coordinates(self, roi1_config: RoiConfig, roi2_x1: int, roi2_y1: int) -> RoiConfig:
+        """计算ROI2在屏幕上的实际坐标"""
         roi2_size = 50
 
-        roi2_x1 = max(roi1_config.x1, roi1_center_x - roi2_size // 2)
-        roi2_y1 = max(roi1_config.y1, roi1_center_y - roi2_size // 2)
-        roi2_x2 = min(roi1_config.x2, roi2_x1 + roi2_size)
-        roi2_y2 = min(roi1_config.y2, roi2_y1 + roi2_size)
+        # ROI2坐标在屏幕上的实际位置
+        screen_x1 = roi1_config.x1 + roi2_x1
+        screen_y1 = roi1_config.y1 + roi2_y1
+        screen_x2 = screen_x1 + roi2_size
+        screen_y2 = screen_y1 + roi2_size
 
-        return RoiConfig(x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2)
+        return RoiConfig(x1=screen_x1, y1=screen_y1, x2=screen_x2, y2=screen_y2)
 
     def get_roi_frame_rate(self) -> int:
         """获取当前ROI帧率设置"""

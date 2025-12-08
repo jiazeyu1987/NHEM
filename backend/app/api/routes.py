@@ -447,8 +447,10 @@ async def dual_realtime_data(
                 value = current_value
                 series.append(TimeSeriesPoint(t=t, value=value))
 
-    # 创建ROI2配置
-    roi2_config = _create_roi2_config(roi_config)
+    # 创建ROI2配置 - 基于交点坐标或ROI1中心
+    roi2_x1 = roi1_data.intersection.roi_x if roi1_data.intersection and roi1_data.intersection.roi_x is not None else None
+    roi2_y1 = roi1_data.intersection.roi_y if roi1_data.intersection and roi1_data.intersection.roi_y is not None else None
+    roi2_config = _create_roi2_config(roi_config, roi2_x1, roi2_y1)
 
     # 创建双ROI数据响应
     dual_roi_data = DualRoiDataResponse(
@@ -478,18 +480,28 @@ async def dual_realtime_data(
     )
 
 
-def _create_roi2_config(roi1_config: RoiConfig) -> RoiConfig:
-    """创建ROI2配置（从ROI1中心计算50x50区域）"""
-    roi1_center_x = roi1_config.x1 + roi1_config.width // 2
-    roi1_center_y = roi1_config.y1 + roi1_config.height // 2
+def _create_roi2_config(roi1_config: RoiConfig, roi2_x1: int = None, roi2_y1: int = None) -> RoiConfig:
+    """创建ROI2配置（基于绿线交点或ROI1中心计算50x50区域）"""
     roi2_size = 50
 
-    roi2_x1 = max(roi1_config.x1, roi1_center_x - roi2_size // 2)
-    roi2_y1 = max(roi1_config.y1, roi1_center_y - roi2_size // 2)
-    roi2_x2 = min(roi1_config.x2, roi2_x1 + roi2_size)
-    roi2_y2 = min(roi1_config.y2, roi2_y1 + roi2_size)
+    # 如果提供了ROI2坐标，使用它们；否则使用ROI1中心
+    if roi2_x1 is not None and roi2_y1 is not None:
+        # 基于交点的ROI2坐标（相对于ROI1起始位置）
+        screen_x1 = roi1_config.x1 + roi2_x1
+        screen_y1 = roi1_config.y1 + roi2_y1
+        logger.debug(f"Using intersection-based ROI2 coordinates: ROI({roi2_x1}, {roi2_y1}) → Screen({screen_x1}, {screen_y1})")
+    else:
+        # Fallback: 使用ROI1中心
+        roi1_center_x = roi1_config.x1 + roi1_config.width // 2
+        roi1_center_y = roi1_config.y1 + roi1_config.height // 2
+        screen_x1 = max(roi1_config.x1, roi1_center_x - roi2_size // 2)
+        screen_y1 = max(roi1_config.y1, roi1_center_y - roi2_size // 2)
+        logger.debug(f"Using center-based ROI2 coordinates: Screen({screen_x1}, {screen_y1})")
 
-    return RoiConfig(x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2)
+    screen_x2 = screen_x1 + roi2_size
+    screen_y2 = screen_y1 + roi2_size
+
+    return RoiConfig(x1=screen_x1, y1=screen_y1, x2=screen_x2, y2=screen_y2)
 
 
 def verify_password(password: str) -> None:
