@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude-code-spec-workflow:*)",
+      "WebSearch",
+      "Bash(python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

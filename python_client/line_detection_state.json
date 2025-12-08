@@ -1,0 +1,13 @@
+{
+  "state": "error",
+  "config": {
+    "enabled": true,
+    "auto_start": false,
+    "auto_recovery": true,
+    "sync_interval": 5.0,
+    "timeout": 10.0,
+    "retry_count": 3,
+    "retry_delay": 1.0
+  },
+  "last_saved": 1765170382.8736477
+}
