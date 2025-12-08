@@ -156,6 +156,65 @@ class AnalyzeSeriesPoint(BaseModel):
     orange: float
 
 
+class Roi2ExtensionParams(BaseModel):
+    """ROI2扩展参数模型"""
+    left: int = Field(default=20, ge=0, description="交点向左扩展像素数")
+    right: int = Field(default=30, ge=0, description="交点向右扩展像素数")
+    top: int = Field(default=15, ge=0, description="交点向上扩展像素数")
+    bottom: int = Field(default=35, ge=0, description="交点向下扩展像素数")
+
+
+class Roi2SizeConstraints(BaseModel):
+    """ROI2尺寸约束模型"""
+    min_width: int = Field(default=25, ge=10, description="ROI2最小宽度")
+    min_height: int = Field(default=25, ge=10, description="ROI2最小高度")
+    max_width: int = Field(default=150, le=300, description="ROI2最大宽度")
+    max_height: int = Field(default=150, le=300, description="ROI2最大高度")
+
+
+class Roi2Config(BaseModel):
+    """ROI2配置模型"""
+    enabled: bool = Field(default=True, description="是否启用ROI2")
+    default_width: int = Field(default=50, ge=10, le=200, description="ROI2默认宽度")
+    default_height: int = Field(default=50, ge=10, le=200, description="ROI2默认高度")
+    dynamic_sizing: bool = Field(default=True, description="是否启用动态尺寸调整")
+    adaptive_mode: str = Field(default="extension_based", description="自适应模式: extension_based, fixed, golden_ratio")
+    extension_params: Roi2ExtensionParams = Field(default_factory=Roi2ExtensionParams, description="扩展参数")
+    size_constraints: Roi2SizeConstraints = Field(default_factory=Roi2SizeConstraints, description="尺寸约束")
+    fallback_mode: str = Field(default="center_based", description="备用模式: center_based, fixed_size")
+
+    @property
+    def extension_total_width(self) -> int:
+        """ROI2扩展后的总宽度"""
+        return self.extension_params.left + self.extension_params.right
+
+    @property
+    def extension_total_height(self) -> int:
+        """ROI2扩展后的总高度"""
+        return self.extension_params.top + self.extension_params.bottom
+
+    def validate_config(self) -> bool:
+        """验证ROI2配置有效性"""
+        # 检查尺寸约束
+        if (self.size_constraints.min_width > self.size_constraints.max_width or
+            self.size_constraints.min_height > self.size_constraints.max_height):
+            return False
+
+        # 检查默认尺寸是否在约束范围内
+        if not (self.size_constraints.min_width <= self.default_width <= self.size_constraints.max_width):
+            return False
+
+        if not (self.size_constraints.min_height <= self.default_height <= self.size_constraints.max_height):
+            return False
+
+        # 检查自适应模式
+        valid_modes = ["extension_based", "fixed", "golden_ratio"]
+        if self.adaptive_mode not in valid_modes:
+            return False
+
+        return True
+
+
 class RoiConfig(BaseModel):
     """ROI配置模型"""
     x1: int = Field(0, ge=0, description="ROI左上角X坐标")
@@ -306,6 +365,32 @@ class RoiWindowCaptureWithPeaksResponse(BaseModel):
     peak_detection_params: Dict[str, Any] = Field(default_factory=dict)
     success: bool = True
     message: str = "ROI window data captured with peak detection analysis"
+
+
+class Roi2ConfigResponse(BaseModel):
+    """ROI2配置响应模型"""
+    type: str = "roi2_config"
+    timestamp: datetime
+    config: Roi2Config
+    success: bool = True
+    message: str = "ROI2 configuration updated successfully"
+
+
+class Roi2RegionInfo(BaseModel):
+    """ROI2区域信息模型"""
+    x1: int = Field(description="ROI2左上角X坐标(相对于ROI1)")
+    y1: int = Field(description="ROI2左上角Y坐标(相对于ROI1)")
+    x2: int = Field(description="ROI2右下角X坐标(相对于ROI1)")
+    y2: int = Field(description="ROI2右下角Y坐标(相对于ROI1)")
+    width: int = Field(description="ROI2实际宽度")
+    height: int = Field(description="ROI2实际高度")
+    center_x: int = Field(description="ROI2中心X坐标")
+    center_y: int = Field(description="ROI2中心Y坐标")
+    source: str = Field(description="ROI2区域来源: intersection, cached_intersection, center, extension_based")
+    screen_x1: Optional[int] = Field(default=None, description="ROI2屏幕左上角X坐标")
+    screen_y1: Optional[int] = Field(default=None, description="ROI2屏幕左上角Y坐标")
+    screen_x2: Optional[int] = Field(default=None, description="ROI2屏幕右下角X坐标")
+    screen_y2: Optional[int] = Field(default=None, description="ROI2屏幕右下角Y坐标")
 
 
 class AnalyzeResponse(BaseModel):

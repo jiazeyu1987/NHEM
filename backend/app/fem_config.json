@@ -22,6 +22,26 @@
       "y1": 80,
       "x2": 1920,
       "y2": 980
+    },
+    "roi2_config": {
+      "enabled": true,
+      "default_width": 50,
+      "default_height": 50,
+      "dynamic_sizing": true,
+      "adaptive_mode": "extension_based",
+      "extension_params": {
+        "left": 20,
+        "right": 30,
+        "top": 120,
+        "bottom": 20
+      },
+      "size_constraints": {
+        "min_width": 25,
+        "min_height": 25,
+        "max_width": 150,
+        "max_height": 150
+      },
+      "fallback_mode": "center_based"
     }
   },
   "peak_detection": {

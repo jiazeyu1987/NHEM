@@ -70,11 +70,17 @@ NHEM (New HEM Monitor) is a FastAPI-based real-time HEM (高回声事件) detect
 - Configurable rectangular regions with validation
 - Real-time screenshot capture at separate frame rate from main processing
 - Fallback to simulated data if ROI capture fails
+- Dual ROI system: ROI1 (large region) and ROI2 (50x50 center region) for coordinated analysis
 
 **Memory Management:**
 - Circular buffers prevent memory leaks
 - Configurable buffer sizes for different data types
 - Automatic cleanup of old data
+
+**Line Detection:**
+- Advanced green line detection using OpenCV with intersection point analysis
+- Located in `app/core/line_intersection_detector.py`
+- Configurable HSV thresholds for color detection
 
 ### Environment Variables (NHEM_ prefix)
 - `NHEM_HOST` - Server address (default: 0.0.0.0)
@@ -91,6 +97,7 @@ The `app/fem_config.json` contains all runtime configuration:
 - ROI capture settings (frame rate, default coordinates)
 - Peak detection thresholds and parameters
 - Security settings
+- Dual ROI configuration with adaptive sizing
 
 ### Manual Control Flow
 The system requires manual startup:
@@ -105,3 +112,39 @@ This project was migrated from "NewFEM" to "NHEM":
 - Log file prefix changed from "newfem_" to "nhem_"
 - Default FPS changed from 60 to 45 to match frontend
 - All core functionality and API compatibility preserved
+
+### Advanced Features
+
+**Dual ROI System:**
+- ROI1: Large capture region (configurable, default 640x900)
+- ROI2: Small center region (50x50) extracted from ROI1 for precise analysis
+- Adaptive sizing with multiple modes (extension_based, center_based)
+- Coordinate transformation between screen and image coordinates
+
+**Line Detection and Intersection Analysis:**
+- Green line detection using HSV color space filtering
+- Geometric intersection point calculation
+- Real-time processing with configurable parameters
+
+**Claude Code Integration:**
+- Custom slash commands in `.claude/commands/` for spec-driven development
+- Specialized agents for requirements validation, design validation, and task execution
+- Professional templates for specifications, bug reports, and technical documentation
+- Comprehensive bug tracking and analysis workflow
+
+### API Endpoints
+The system provides extensive API endpoints (30+):
+- Health check: `/health`
+- System status: `/status`
+- Real-time data: `/data/realtime`
+- Control commands: `/control/start_detection`, `/control/stop_detection`
+- Configuration: `/config/get`, `/config/update`
+- ROI management: `/roi/config`, `/roi/capture`
+- Line detection: `/line_detection/*`
+
+### Performance Characteristics
+- **Main Processing**: 45 FPS (22.22ms intervals)
+- **WebSocket Broadcasting**: 60 FPS (16.67ms intervals)
+- **ROI Capture**: 1-4 FPS (separate from main processing)
+- **Memory Management**: Circular buffers (100-10000 frames)
+- **API Response Time**: <50ms for most endpoints

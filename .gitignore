@@ -1,3 +1,4 @@
 /backend/logs/*.log
 /python_client/__pycache__/*.pyc
 *.pyc
+/nul

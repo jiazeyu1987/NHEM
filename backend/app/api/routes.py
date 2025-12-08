@@ -38,6 +38,8 @@ from ..models import (
     RoiCaptureResponse,
     RoiConfig,
     RoiConfigResponse,
+    Roi2Config,
+    Roi2ConfigResponse,
     RoiData,
     RoiFrameRateResponse,
     RoiTimeSeriesPoint,
@@ -944,6 +946,183 @@ async def set_roi_frame_rate(
         success=True,
         message=f"ROI frame rate updated to {frame_rate} FPS"
     )
+
+
+# ROI2配置管理端点
+@router.get("/roi2/config", response_model=Roi2ConfigResponse)
+async def get_roi2_config() -> Roi2ConfigResponse:
+    """获取当前ROI2配置"""
+    roi2_config = roi_capture_service.get_roi2_config()
+
+    return Roi2ConfigResponse(
+        timestamp=datetime.utcnow(),
+        config=roi2_config,
+        success=True,
+        message="ROI2配置获取成功"
+    )
+
+
+@router.post("/roi2/config", response_model=Roi2ConfigResponse)
+async def update_roi2_config(
+    config: Roi2Config,
+    password: str = Form(...),
+) -> Roi2ConfigResponse:
+    """更新ROI2配置"""
+    verify_password(password)
+
+    logger.info("🎯 Updating ROI2 configuration: %s", config)
+
+    try:
+        # 更新ROI2配置
+        success = roi_capture_service.update_roi2_config(config)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid ROI2 configuration"
+            )
+
+        logger.info("✅ ROI2 configuration updated successfully")
+        return Roi2ConfigResponse(
+            timestamp=datetime.utcnow(),
+            config=config,
+            success=True,
+            message="ROI2配置更新成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to update ROI2 configuration: %s", str(e))
+        error_response = ErrorResponse(
+            timestamp=datetime.utcnow(),
+            error_code="ROI2_CONFIG_UPDATE_FAILED",
+            error_message="Failed to update ROI2 configuration",
+            details=ErrorDetails(
+                parameter="roi2_config",
+                value=config.model_dump(),
+                constraint=str(e)
+            )
+        )
+        return JSONResponse(status_code=500, content=error_response.model_dump(mode='json'))
+
+
+@router.post("/roi2/extension-params")
+async def update_roi2_extension_params(
+    left: int = Form(default=20, ge=0, description="交点向左扩展像素数"),
+    right: int = Form(default=30, ge=0, description="交点向右扩展像素数"),
+    top: int = Form(default=15, ge=0, description="交点向上扩展像素数"),
+    bottom: int = Form(default=35, ge=0, description="交点向下扩展像素数"),
+    password: str = Form(...),
+) -> Roi2ConfigResponse:
+    """快速更新ROI2扩展参数"""
+    verify_password(password)
+
+    logger.info("🎯 Updating ROI2 extension parameters: left=%d, right=%d, top=%d, bottom=%d",
+               left, right, top, bottom)
+
+    try:
+        # 获取当前配置
+        current_config = roi_capture_service.get_roi2_config()
+
+        # 创建新的扩展参数
+        from ..models import Roi2ExtensionParams
+        new_extension_params = Roi2ExtensionParams(
+            left=left,
+            right=right,
+            top=top,
+            bottom=bottom
+        )
+
+        # 更新配置
+        current_config.extension_params = new_extension_params
+
+        success = roi_capture_service.update_roi2_config(current_config)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to update ROI2 extension parameters"
+            )
+
+        logger.info("✅ ROI2 extension parameters updated successfully")
+        return Roi2ConfigResponse(
+            timestamp=datetime.utcnow(),
+            config=current_config,
+            success=True,
+            message="ROI2扩展参数更新成功"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to update ROI2 extension parameters: %s", str(e))
+        error_response = ErrorResponse(
+            timestamp=datetime.utcnow(),
+            error_code="ROI2_EXTENSION_PARAMS_UPDATE_FAILED",
+            error_message="Failed to update ROI2 extension parameters",
+            details=ErrorDetails(
+                parameter="extension_params",
+                value={"left": left, "right": right, "top": top, "bottom": bottom},
+                constraint=str(e)
+            )
+        )
+        return JSONResponse(status_code=500, content=error_response.model_dump(mode='json'))
+
+
+@router.post("/roi2/adaptive-mode")
+async def set_roi2_adaptive_mode(
+    mode: str = Form(..., description="自适应模式: extension_based, fixed, golden_ratio"),
+    password: str = Form(...),
+) -> Roi2ConfigResponse:
+    """设置ROI2自适应模式"""
+    verify_password(password)
+
+    # 验证模式有效性
+    valid_modes = ["extension_based", "fixed", "golden_ratio"]
+    if mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid adaptive mode. Valid modes: {valid_modes}"
+        )
+
+    logger.info("🎯 Setting ROI2 adaptive mode: %s", mode)
+
+    try:
+        # 获取当前配置
+        current_config = roi_capture_service.get_roi2_config()
+
+        # 更新模式
+        current_config.adaptive_mode = mode
+
+        success = roi_capture_service.update_roi2_config(current_config)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to set ROI2 adaptive mode"
+            )
+
+        logger.info("✅ ROI2 adaptive mode set successfully to %s", mode)
+        return Roi2ConfigResponse(
+            timestamp=datetime.utcnow(),
+            config=current_config,
+            success=True,
+            message=f"ROI2自适应模式设置为 {mode}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to set ROI2 adaptive mode: %s", str(e))
+        error_response = ErrorResponse(
+            timestamp=datetime.utcnow(),
+            error_code="ROI2_ADAPTIVE_MODE_SET_FAILED",
+            error_message="Failed to set ROI2 adaptive mode",
+            details=ErrorDetails(
+                parameter="adaptive_mode",
+                value=mode,
+                constraint=str(e)
+            )
+        )
+        return JSONResponse(status_code=500, content=error_response.model_dump(mode='json'))
 
 
 @router.post("/data/fps", response_model=DataFpsResponse)

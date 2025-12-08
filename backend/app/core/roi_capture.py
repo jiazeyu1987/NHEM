@@ -17,7 +17,10 @@ from PIL import Image, ImageGrab
 import cv2
 import numpy as np
 
-from ..models import RoiConfig, RoiData, LineIntersectionPoint
+from ..models import (
+    RoiConfig, RoiData, LineIntersectionPoint, Roi2Config,
+    Roi2ExtensionParams, Roi2SizeConstraints, Roi2RegionInfo
+)
 
 # 导入绿线检测算法
 import sys
@@ -58,6 +61,10 @@ class RoiCaptureService:
         # self._last_roi2_y: Optional[int] = None  # 移除历史坐标跟踪
         # self._roi2_smoothing_factor = 0.8       # 移除平滑因子
 
+        # ROI2配置管理
+        self._roi2_config: Roi2Config = self._load_roi2_config()
+        self._roi2_region_history: list = []  # ROI2区域历史记录
+
         # 定时器方案 - 替代复杂缓存机制
         self._roi_timer_thread: Optional[threading.Thread] = None
         self._stop_timer_event = threading.Event()
@@ -92,6 +99,14 @@ class RoiCaptureService:
             delattr(self, '_last_logged_roi2_y')
 
         self._logger.debug("ROI and ROI2 cache cleared - next capture will be forced")
+
+    def _invalidate_roi2_cache(self):
+        """清除ROI2缓存"""
+        self._cached_roi2_data = None
+        self._last_roi2_config = None
+        self._last_roi2_capture_time = 0.0
+        self._roi2_cache_valid = False
+        self._logger.debug("ROI2 cache invalidated")
 
     def _update_intersection_cache(self, intersection_point: Optional[LineIntersectionPoint]):
         """更新绿线交点缓存"""
@@ -617,55 +632,26 @@ class RoiCaptureService:
     def _extract_roi2_from_roi1(self, roi1_config: RoiConfig, roi1_data: RoiData,
                                 intersection_point: Optional[LineIntersectionPoint] = None,
                                 roi1_original_image: Optional[Image.Image] = None) -> Optional[RoiData]:
-        """从ROI1原始图像中提取ROI2（50x50区域，基于绿线交点或中心点）"""
+        """从ROI1原始图像中提取ROI2（可配置尺寸，基于绿线交点和智能区域选择）"""
         try:
             self._logger.debug(f"Extracting ROI2 from original ROI1 image: ROI1 config=({roi1_config.x1},{roi1_config.y1})->({roi1_config.x2},{roi1_config.y2}), "
                              f"size={roi1_config.width}x{roi1_config.height}")
 
-            # ROI2固定尺寸: 50x50
-            roi2_size = 50
-            half_size = roi2_size // 2
+            # 检查ROI2是否启用
+            if not self._roi2_config.enabled:
+                self._logger.debug("ROI2 is disabled, skipping extraction")
+                return None
 
-            # 确定ROI2中心点（使用ROI内坐标）
-            if intersection_point is not None and intersection_point.roi_x is not None and intersection_point.roi_y is not None:
-                # 使用交点坐标
-                center_x = intersection_point.roi_x
-                center_y = intersection_point.roi_y
-                source = "intersection"
-                self._logger.debug(f"Using intersection point for ROI2: ROI({center_x}, {center_y})")
-            elif self._intersection_cache_valid and self._last_intersection_point is not None:
-                # 使用缓存的交点坐标
-                center_x = self._last_intersection_point.roi_x
-                center_y = self._last_intersection_point.roi_y
-                source = "cached_intersection"
-                self._logger.debug(f"Using cached intersection point for ROI2: ROI({center_x}, {center_y})")
-            else:
-                # Fallback: 使用ROI1中心点
-                center_x = roi1_config.width // 2
-                center_y = roi1_config.height // 2
-                source = "center"
-                self._logger.debug(f"Using ROI1 center for ROI2: ({center_x}, {center_y})")
+            # 使用智能ROI2区域计算
+            roi2_region = self._calculate_adaptive_roi2_region(intersection_point, roi1_config)
 
-            # 平滑算法已移除 - 直接使用检测到的真实坐标
-            # ROI2将立即响应交点变化，无收敛延迟
-            self._logger.debug(f"ROI2 using raw detection coordinates: ({center_x}, {center_y}), source: {source}")
+            self._logger.info(f"ROI2 adaptive region calculated: {roi2_region.width}x{roi2_region.height} "
+                            f"at ({roi2_region.x1},{roi2_region.y1})->({roi2_region.x2},{roi2_region.y2}) "
+                            f"source={roi2_region.source}")
 
-            # ROI2的起始和结束坐标（在ROI1内）
-            roi2_x1 = center_x - half_size
-            roi2_y1 = center_y - half_size
-            roi2_x2 = center_x + half_size
-            roi2_y2 = center_y + half_size
-
-            # 边界检查 - 如果超出ROI1边界，返回错误状态
-            if (roi2_x1 < 0 or roi2_y1 < 0 or
-                roi2_x2 > roi1_config.width or roi2_y2 > roi1_config.height):
-                self._logger.warning(f"ROI2 {roi2_size}x{roi2_size} region at ({center_x}, {center_y}) exceeds ROI1 bounds: {roi1_config.width}x{roi1_config.height}")
-                self._logger.warning(f"ROI2 coordinates: ({roi2_x1}, {roi2_y1}) → ({roi2_x2}, {roi2_y2})")
-                raise ValueError("ROI2 region exceeds ROI1 boundaries")
-
-            # ROI2坐标验证已通过边界检查，确保是精确的50x50尺寸
-            self._logger.debug(f"ROI2 ROI coordinates calculated: ({roi2_x1},{roi2_y1})->({roi2_x2},{roi2_y2}) "
-                             f"size={(roi2_x2-roi2_x1)}x{(roi2_y2-roi2_y1)}")
+            # ROI2坐标验证已通过智能边界检查
+            self._logger.debug(f"ROI2 ROI coordinates calculated: ({roi2_region.x1},{roi2_region.y1})->({roi2_region.x2},{roi2_region.y2}) "
+                             f"size={roi2_region.width}x{roi2_region.height}")
 
             # 使用原始ROI1图像而不是解码base64数据
             if roi1_original_image is None:
@@ -689,7 +675,7 @@ class RoiCaptureService:
 
             # 从原始图像中直接截取ROI2区域（使用ROI内坐标）
             # 由于roi1_image是ROI1区域的原始图像，可以直接使用ROI内坐标
-            roi2_image = roi1_image.crop((roi2_x1, roi2_y1, roi2_x2, roi2_y2))
+            roi2_image = roi1_image.crop((roi2_region.x1, roi2_region.y1, roi2_region.x2, roi2_region.y2))
 
             # 添加ROI2图像调试日志
             roi2_actual_size = roi2_image.size
@@ -699,7 +685,7 @@ class RoiCaptureService:
             # 计算ROI2平均灰度值
             gray_roi2 = roi2_image.convert('L')
             histogram = gray_roi2.histogram()
-            total_pixels = roi2_size * roi2_size  # 固定50x50 = 2500像素
+            total_pixels = roi2_region.width * roi2_region.height  # 使用实际ROI2尺寸
             total_sum = sum(i * count for i, count in enumerate(histogram))
             average_gray = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
 
@@ -728,26 +714,28 @@ class RoiCaptureService:
             self._logger.debug(f"ROI2 encoded: resized_size={roi2_resized.size}, base64_length={roi2_base64_length}")
 
             roi2_data = RoiData(
-                width=roi2_size,  # 固定50像素宽度
-                height=roi2_size,  # 固定50像素高度
+                width=roi2_region.width,   # 使用实际ROI2宽度
+                height=roi2_region.height,  # 使用实际ROI2高度
                 pixels=f"data:image/png;base64,{roi2_base64}",
                 gray_value=average_gray,
-                format="base64"
+                format="base64",
+                intersection=intersection_point
             )
 
             self._logger.debug("ROI2 extracted from original ROI1 image: size=%dx%d, gray_value=%.2f, non_zero_ratio=%.2f%%",
-                             roi2_size, roi2_size, average_gray, (non_zero_pixels/total_pixels)*100)
+                             roi2_region.width, roi2_region.height, average_gray, (non_zero_pixels/total_pixels)*100)
 
             # ROI2状态监控日志（仅在坐标发生很大变化时才输出，正常情况下静默）
-            coord_changed = (hasattr(self, '_last_logged_roi2_x') and
-                           (abs(self._last_logged_roi2_x - center_x) > 20 or
-                            abs(self._last_logged_roi2_y - center_y) > 20))
+            coord_changed = (hasattr(self, '_last_logged_roi2_center_x') and
+                           (abs(self._last_logged_roi2_center_x - roi2_region.center_x) > 20 or
+                            abs(self._last_logged_roi2_center_y - roi2_region.center_y) > 20))
 
-            if coord_changed or not hasattr(self, '_last_logged_roi2_x'):
-                self._logger.debug(f"ROI2 Position Changed - ROI({center_x}, {center_y}) -> Screen({roi1_config.x1 + center_x}, {roi1_config.y1 + center_y}), "
-                                 f"Quality: {average_gray:.1f}, Source: {source}")
-                self._last_logged_roi2_x = center_x
-                self._last_logged_roi2_y = center_y
+            if coord_changed or not hasattr(self, '_last_logged_roi2_center_x'):
+                self._logger.debug(f"ROI2 Position Changed - ROI({roi2_region.center_x}, {roi2_region.center_y}) -> "
+                                 f"Screen({roi2_region.screen_x1 + roi2_region.width//2}, {roi2_region.screen_y1 + roi2_region.height//2}), "
+                                 f"Quality: {average_gray:.1f}, Source: {roi2_region.source}")
+                self._last_logged_roi2_center_x = roi2_region.center_x
+                self._last_logged_roi2_center_y = roi2_region.center_y
             # 正常情况下不再输出ROI2状态日志，避免刷屏
 
             return roi2_data
@@ -956,6 +944,309 @@ class RoiCaptureService:
         except Exception as e:
             self._logger.error("Error reloading ROI config: %s", str(e))
             return False
+
+    def _load_roi2_config(self) -> Roi2Config:
+        """从配置文件加载ROI2配置"""
+        try:
+            import json
+            import os
+
+            config_path = os.path.join(os.path.dirname(__file__), '..', 'fem_config.json')
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+
+            roi2_config_data = config_data.get('roi_capture', {}).get('roi2_config', {})
+
+            if not roi2_config_data:
+                self._logger.warning("ROI2 config not found, using default values")
+                return Roi2Config()
+
+            # 创建扩展参数对象
+            extension_data = roi2_config_data.get('extension_params', {})
+            extension_params = Roi2ExtensionParams(**extension_data)
+
+            # 创建尺寸约束对象
+            constraints_data = roi2_config_data.get('size_constraints', {})
+            size_constraints = Roi2SizeConstraints(**constraints_data)
+
+            # 创建ROI2配置对象
+            roi2_config = Roi2Config(
+                enabled=roi2_config_data.get('enabled', True),
+                default_width=roi2_config_data.get('default_width', 50),
+                default_height=roi2_config_data.get('default_height', 50),
+                dynamic_sizing=roi2_config_data.get('dynamic_sizing', True),
+                adaptive_mode=roi2_config_data.get('adaptive_mode', 'extension_based'),
+                extension_params=extension_params,
+                size_constraints=size_constraints,
+                fallback_mode=roi2_config_data.get('fallback_mode', 'center_based')
+            )
+
+            if roi2_config.validate_config():
+                self._logger.info(f"ROI2 config loaded successfully: {roi2_config}")
+                return roi2_config
+            else:
+                self._logger.error("Invalid ROI2 config, using default values")
+                return Roi2Config()
+
+        except Exception as e:
+            self._logger.error(f"Failed to load ROI2 config: {e}, using default values")
+            return Roi2Config()
+
+    def update_roi2_config(self, config: Roi2Config) -> bool:
+        """更新ROI2配置"""
+        try:
+            if not config.validate_config():
+                self._logger.error("Invalid ROI2 configuration")
+                return False
+
+            self._roi2_config = config
+
+            # 清除ROI2缓存以应用新配置
+            self._invalidate_roi2_cache()
+
+            self._logger.info(f"ROI2 config updated: {config}")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Failed to update ROI2 config: {e}")
+            return False
+
+    def get_roi2_config(self) -> Roi2Config:
+        """获取当前ROI2配置"""
+        return self._roi2_config
+
+    def _calculate_adaptive_roi2_region(self, intersection_point: Optional[LineIntersectionPoint],
+                                       roi1_config: RoiConfig) -> Roi2RegionInfo:
+        """
+        基于交点和配置参数计算ROI2区域
+
+        Args:
+            intersection_point: 绿线交点信息
+            roi1_config: ROI1配置
+
+        Returns:
+            Roi2RegionInfo: ROI2区域信息
+        """
+        if not self._roi2_config.enabled:
+            raise ValueError("ROI2 is disabled in configuration")
+
+        source = "unknown"
+
+        if self._roi2_config.adaptive_mode == "fixed":
+            # 固定尺寸模式
+            roi2_width = self._roi2_config.default_width
+            roi2_height = self._roi2_config.default_height
+            center_x = roi1_config.width // 2
+            center_y = roi1_config.height // 2
+            source = "fixed"
+
+            # 计算ROI2区域坐标
+            roi2_x1 = center_x - roi2_width // 2
+            roi2_y1 = center_y - roi2_height // 2
+            roi2_x2 = center_x + roi2_width // 2
+            roi2_y2 = center_y + roi2_height // 2
+
+        elif self._roi2_config.adaptive_mode == "extension_based":
+            # 基于扩展的智能模式
+            if (intersection_point is not None and
+                intersection_point.roi_x is not None and
+                intersection_point.roi_y is not None):
+                # 使用绿线交点作为中心
+                center_x = intersection_point.roi_x
+                center_y = intersection_point.roi_y
+                source = "intersection"
+            elif self._intersection_cache_valid and self._last_intersection_point is not None:
+                # 使用缓存的交点
+                center_x = self._last_intersection_point.roi_x
+                center_y = self._last_intersection_point.roi_y
+                source = "cached_intersection"
+            else:
+                # 备用方案：使用ROI1中心
+                center_x = roi1_config.width // 2
+                center_y = roi1_config.height // 2
+                source = "center"
+
+            # 应用扩展参数
+            roi2_x1 = center_x - self._roi2_config.extension_params.left
+            roi2_y1 = center_y - self._roi2_config.extension_params.top
+            roi2_x2 = center_x + self._roi2_config.extension_params.right
+            roi2_y2 = center_y + self._roi2_config.extension_params.bottom
+
+            # 计算实际尺寸
+            roi2_width = roi2_x2 - roi2_x1
+            roi2_height = roi2_y2 - roi2_y1
+
+        elif self._roi2_config.adaptive_mode == "golden_ratio":
+            # 黄金比例模式
+            if (intersection_point is not None and
+                intersection_point.roi_x is not None and
+                intersection_point.roi_y is not None):
+                center_x = intersection_point.roi_x
+                center_y = intersection_point.roi_y
+                source = "intersection"
+            else:
+                center_x = roi1_config.width // 2
+                center_y = roi1_config.height // 2
+                source = "center"
+
+            # 使用黄金比例 (1:1.618)
+            base_size = min(roi1_config.width, roi1_config.height) // 6
+            roi2_width = int(base_size * 1.618)
+            roi2_height = int(base_size)
+
+            roi2_x1 = center_x - roi2_width // 2
+            roi2_y1 = center_y - roi2_height // 2
+            roi2_x2 = center_x + roi2_width // 2
+            roi2_y2 = center_y + roi2_height // 2
+
+        else:
+            # 默认固定尺寸
+            roi2_width = self._roi2_config.default_width
+            roi2_height = self._roi2_config.default_height
+            center_x = roi1_config.width // 2
+            center_y = roi1_config.height // 2
+            source = "default"
+
+        # 应用智能边界约束
+        roi2_x1, roi2_y1, roi2_x2, roi2_y2 = self._apply_boundary_constraints(
+            roi2_x1, roi2_y1, roi2_x2, roi2_y2, roi1_config, source
+        )
+
+        # 重新计算最终尺寸和中心
+        final_width = roi2_x2 - roi2_x1
+        final_height = roi2_y2 - roi2_y1
+        final_center_x = roi2_x1 + final_width // 2
+        final_center_y = roi2_y1 + final_height // 2
+
+        # 计算屏幕坐标
+        screen_x1 = roi1_config.x1 + roi2_x1
+        screen_y1 = roi1_config.y1 + roi2_y1
+        screen_x2 = roi1_config.x1 + roi2_x2
+        screen_y2 = roi1_config.y1 + roi2_y2
+
+        region_info = Roi2RegionInfo(
+            x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2,
+            width=final_width, height=final_height,
+            center_x=final_center_x, center_y=final_center_y,
+            source=source,
+            screen_x1=screen_x1, screen_y1=screen_y1,
+            screen_x2=screen_x2, screen_y2=screen_y2
+        )
+
+        # 记录ROI2区域历史
+        self._roi2_region_history.append({
+            'timestamp': time.time(),
+            'region_info': region_info,
+            'intersection_point': intersection_point
+        })
+
+        # 保持历史记录不超过100条
+        if len(self._roi2_region_history) > 100:
+            self._roi2_region_history.pop(0)
+
+        self._logger.debug(f"ROI2 region calculated: {region_info}")
+        return region_info
+
+    def _apply_boundary_constraints(self, x1: int, y1: int, x2: int, y2: int,
+                                   roi1_config: RoiConfig, source: str) -> Tuple[int, int, int, int]:
+        """
+        应用智能边界约束和尺寸调整
+
+        Args:
+            x1, y1, x2, y2: 初始ROI2区域坐标
+            roi1_config: ROI1配置
+            source: ROI2区域来源
+
+        Returns:
+            Tuple[int, int, int, int]: 调整后的ROI2区域坐标
+        """
+        # 1. 基础边界检查 - 确保不超出ROI1范围
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(roi1_config.width, x2)
+        y2 = min(roi1_config.height, y2)
+
+        # 2. 计算当前尺寸
+        current_width = x2 - x1
+        current_height = y2 - y1
+
+        # 3. 应用最小尺寸约束
+        if current_width < self._roi2_config.size_constraints.min_width:
+            needed_width = self._roi2_config.size_constraints.min_width
+
+            # 智能扩展：优先向右扩展，如果空间不够则向左扩展
+            available_right = roi1_config.width - x2
+            available_left = x1
+
+            if available_right >= needed_width - current_width:
+                # 向右扩展
+                x2 = x2 + (needed_width - current_width)
+            elif available_left + available_right >= needed_width - current_width:
+                # 两侧扩展
+                expand_left = min(available_left, (needed_width - current_width) // 2)
+                x1 = x1 - expand_left
+                x2 = x2 + (needed_width - current_width - expand_left)
+            else:
+                # 尽最大可能扩展
+                x1 = 0
+                x2 = min(roi1_config.width, needed_width)
+
+            current_width = x2 - x1
+
+        if current_height < self._roi2_config.size_constraints.min_height:
+            needed_height = self._roi2_config.size_constraints.min_height
+
+            # 智能扩展：优先向下扩展
+            available_bottom = roi1_config.height - y2
+            available_top = y1
+
+            if available_bottom >= needed_height - current_height:
+                # 向下扩展
+                y2 = y2 + (needed_height - current_height)
+            elif available_top + available_bottom >= needed_height - current_height:
+                # 上下扩展
+                expand_top = min(available_top, (needed_height - current_height) // 2)
+                y1 = y1 - expand_top
+                y2 = y2 + (needed_height - current_height - expand_top)
+            else:
+                # 尽最大可能扩展
+                y1 = 0
+                y2 = min(roi1_config.height, needed_height)
+
+            current_height = y2 - y1
+
+        # 4. 应用最大尺寸约束
+        if current_width > self._roi2_config.size_constraints.max_width:
+            # 从中心收缩
+            center_x = (x1 + x2) // 2
+            half_width = self._roi2_config.size_constraints.max_width // 2
+            x1 = max(0, center_x - half_width)
+            x2 = min(roi1_config.width, center_x + half_width)
+            current_width = x2 - x1
+
+        if current_height > self._roi2_config.size_constraints.max_height:
+            # 从中心收缩
+            center_y = (y1 + y2) // 2
+            half_height = self._roi2_config.size_constraints.max_height // 2
+            y1 = max(0, center_y - half_height)
+            y2 = min(roi1_config.height, center_y + half_height)
+            current_height = y2 - y1
+
+        # 5. 最终验证
+        if x1 >= x2 or y1 >= y2:
+            self._logger.warning(f"Invalid ROI2 region after constraints: ({x1},{y1})->({x2},{y2})")
+            # 使用安全的默认区域
+            safe_size = min(self._roi2_config.size_constraints.min_width,
+                          roi1_config.width, roi1_config.height)
+            center_x = roi1_config.width // 2
+            center_y = roi1_config.height // 2
+
+            x1 = max(0, center_x - safe_size // 2)
+            y1 = max(0, center_y - safe_size // 2)
+            x2 = min(roi1_config.width, x1 + safe_size)
+            y2 = min(roi1_config.height, y1 + safe_size)
+
+        return x1, y1, x2, y2
 
 
 # 单例ROI截图服务
