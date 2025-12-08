@@ -12,7 +12,17 @@ from typing import Optional, Tuple
 # 启用PIL导入
 from PIL import Image, ImageGrab
 
-from ..models import RoiConfig, RoiData
+# 导入OpenCV和numpy用于绿线检测
+import cv2
+import numpy as np
+
+from ..models import RoiConfig, RoiData, LineIntersectionPoint
+
+# 导入绿线检测算法
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../../doc/ROI'))
+from green_detector import detect_green_intersection
 
 
 class RoiCaptureService:
@@ -167,7 +177,72 @@ class RoiCaptureService:
         total_sum = sum(i * count for i, count in enumerate(histogram))
         average_gray = float(total_sum / total_pixels) if total_pixels > 0 else 0.0
 
-        # 调整ROI图像大小到标准尺寸（200x150）
+        # 集成绿线交点检测 - 使用原始ROI数据
+        intersection_point = None
+        detection_start_time = time.time()
+        try:
+            # 性能优化: 检查ROI尺寸，如果过大则进行智能降采样
+            roi_width, roi_height = roi_image.size
+            max_detection_size = 1500  # 最大检测尺寸，超过则降采样
+
+            detection_image = roi_image
+            scale_factor = 1.0
+
+            if roi_width > max_detection_size or roi_height > max_detection_size:
+                # 计算缩放比例
+                scale_factor = min(max_detection_size / roi_width, max_detection_size / roi_height)
+                new_width = int(roi_width * scale_factor)
+                new_height = int(roi_height * scale_factor)
+                detection_image = roi_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                self._logger.debug(f"ROI detection scaled from {roi_width}x{roi_height} to {new_width}x{new_height}")
+
+            # 将PIL图像转换为OpenCV格式进行检测
+            roi_cv_image = cv2.cvtColor(np.array(detection_image), cv2.COLOR_RGB2BGR)
+
+            # 调用绿线检测算法 - 使用(可能缩放后的)ROI数据
+            intersection = detect_green_intersection(roi_cv_image)
+
+            if intersection is not None:
+                roi_x, roi_y = intersection
+
+                # 如果进行了缩放，需要将坐标转换回原始ROI尺寸
+                if scale_factor != 1.0:
+                    roi_x = int(roi_x / scale_factor)
+                    roi_y = int(roi_y / scale_factor)
+
+                # 转换为屏幕坐标
+                screen_x = roi_config.x1 + roi_x
+                screen_y = roi_config.y1 + roi_y
+
+                # 打印到控制台 - 显示屏幕坐标和ROI内坐标
+                print(f"ROI1 Green Line Intersection: Screen({screen_x}, {screen_y}) ROI({roi_x}, {roi_y})")
+
+                # 创建交点数据模型 - 包含屏幕坐标和ROI内坐标
+                intersection_point = LineIntersectionPoint(
+                    x=screen_x,
+                    y=screen_y,
+                    roi_x=roi_x,
+                    roi_y=roi_y,
+                    confidence=1.0
+                )
+                self._logger.debug(f"Green line intersection detected at Screen({screen_x}, {screen_y}) ROI({roi_x}, {roi_y})")
+            else:
+                print("ROI1: No green line intersection detected")
+                self._logger.debug("No green line intersection detected")
+
+        except Exception as e:
+            self._logger.error(f"Green line detection failed: {str(e)}")
+            print("ROI1: Green line detection error")
+
+        # 性能监控
+        detection_time = (time.time() - detection_start_time) * 1000  # 转换为毫秒
+        self._logger.debug(f"Green line detection completed in {detection_time:.2f}ms")
+
+        # 如果检测时间超过250ms（4 FPS目标），记录警告
+        if detection_time > 250:
+            self._logger.warning(f"Green line detection took {detection_time:.2f}ms - may affect 4 FPS target")
+
+        # 调整ROI图像大小到标准尺寸（200x150）- 用于显示
         try:
             roi_resized = roi_image.resize((200, 150), Image.Resampling.LANCZOS)
         except AttributeError:
@@ -184,7 +259,8 @@ class RoiCaptureService:
             height=roi_config.height,
             pixels=f"data:image/png;base64,{roi_base64}",
             gray_value=average_gray,
-            format="base64"
+            format="base64",
+            intersection=intersection_point
         )
 
         self._logger.debug(

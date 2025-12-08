@@ -23,10 +23,18 @@ pip install -r requirements.txt
 # Run the backend server
 python run.py
 
+# Test and validation scripts
+python test_syntax_check.py          # Syntax validation
+python test_compile.py               # Compilation test
+python test_enhanced_endpoint.py     # Enhanced API endpoint test
+python test_memory_management.py     # Memory management validation
+python test_line_intersection.py     # Line detection functionality test
+
 # The backend runs on http://localhost:8421
 # API endpoints available at http://localhost:8421/docs
 # Health check at http://localhost:8421/health
 # System status at http://localhost:8421/status
+# Line detection API at /line_detection/*
 ```
 
 ### Frontend Development
@@ -49,7 +57,7 @@ npx http-server -p 3000
 cd python_client
 
 # Install dependencies
-pip install matplotlib requests pillow numpy
+pip install matplotlib requests pillow numpy opencv-python  # Add OpenCV for line detection
 
 # Run full GUI client (recommended)
 python http_realtime_client.py
@@ -61,6 +69,11 @@ python simple_http_client.py
 python client.py --help
 python client.py status
 python client.py start-detection --password 31415
+
+# Line detection testing and validation
+python test_line_detection.py           # Line detection API test
+python line_detection_api_example.py    # Line detection API usage example
+python validate_task32.py               # Task 32 validation script
 ```
 
 ## Architecture Overview
@@ -73,9 +86,10 @@ python client.py start-detection --password 31415
 - **API Layer**: `app/api/routes.py` - Complete RESTful API (30+ endpoints)
 - **WebSocket**: `app/core/socket_server.py` - Real-time data streaming via port 30415
 - **Configuration**: `app/fem_config.json` - Main configuration with NHEM_* environment variable support
-- **ROI Capture**: `app/core/roi_capture.py` - Real-time screenshot capture at separate frame rate
+- **ROI Capture**: `app/core/roi_capture.py` - Dual ROI system with screen capture at separate frame rate
 - **Data Broadcasting**: `app/core/data_broadcaster.py` - 60 FPS WebSocket data streaming
 - **Config Manager**: `app/core/config_manager.py` - Runtime configuration updates and persistence
+- **Line Detection**: `app/core/line_intersection_detector.py` - Advanced green line detection and intersection analysis (NEW)
 
 ### Frontend Architecture (`front/`)
 - **Single File Application**: `index.html` - Complete SPA (135KB)
@@ -89,7 +103,10 @@ python client.py start-detection --password 31415
 - **Plotting Component**: `realtime_plotter.py` - Matplotlib real-time plotting at 20 FPS
 - **API Client**: `client.py` - Command-line interface for system control
 - **Simple Client**: `simple_http_client.py` - Lightweight monitoring client
+- **Line Detection API Client**: `line_detection_api_client.py` - Advanced line detection API integration (NEW)
+- **Line Detection Widget**: `line_detection_widget.py` - GUI component for line detection control (NEW)
 - **Configuration**: `http_client_config.json` - Client-specific ROI and peak detection settings
+- **Line Detection State**: `line_detection_state.json` - Persistent line detection configuration (NEW)
 - **Local Config**: `local_config_loader.py` - Configuration management utilities
 
 ## Key Performance Characteristics
@@ -139,7 +156,9 @@ Client-specific configuration:
 Backend Processing Pipeline:
 Data Sources → DataProcessor(45FPS) → Peak Detection → DataStore → DataBroadcaster(60FPS) → WebSocket Clients
                                    ↓
-                            ROI Capture Service(4FPS) → Screenshot Processing → Base64 Encoding
+                            Dual ROI Capture Service(4FPS) → ROI1 + ROI2 Extraction → Base64 Encoding
+                                   ↓
+                            Line Intersection Detection → Green Line Analysis → Intersection Points
                                    ↓
                             ConfigManager ← Runtime API Updates → Persistence
 
@@ -147,7 +166,7 @@ Frontend Data Flow:
 Backend API → HTTP Polling(20FPS) → Canvas Rendering → UI Updates → User Interaction → Configuration Updates
 
 Python Client Data Flow:
-Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates → ROI Controls → Manual Start/Stop
+Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates → ROI Controls → Line Detection API Integration
 ```
 
 ## Manual Control Requirements
@@ -166,9 +185,12 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Uses FastAPI with uvicorn, Pydantic for data validation and structured responses
 - Thread-safe circular buffers with locks for concurrent data processing
 - Peak detection classifies peaks as green (stable) or red (unstable) based on signal characteristics
+- **Dual ROI System**: ROI1 (large region) and ROI2 (50x50 center region) for coordinated analysis (NEW)
+- **Line Detection**: Advanced green line detection using OpenCV with intersection point analysis (NEW)
 - ROI capture integrates with screen capture via `app/core/roi_capture.py` with fallback to simulated data
 - Configuration hierarchy: JSON file (`app/fem_config.json`) → Environment variables (`NHEM_*` prefix) → Code defaults
 - Runtime configuration updates via API endpoints with persistence in JSON format
+- Medical-grade error handling with severity classification and recovery mechanisms (NEW)
 
 ### Frontend Development
 - Single-page application architecture
@@ -181,7 +203,10 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Supports multiple client variants (Full GUI, Simple GUI, CLI)
 - Matplotlib integration for real-time plotting
 - Tkinter for GUI components
+- **Line Detection Integration**: API client with automatic retry, timeout control, and status management (NEW)
+- **Widget System**: Modular GUI components for line detection control and visualization (NEW)
 - Configuration hierarchy: JSON → environment variables → defaults
+- Persistent state management for line detection configuration
 
 ## Testing and Debugging
 
@@ -190,6 +215,8 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Health check available at `/health` - returns server status and configuration
 - System status at `/status` - detailed system information and processing state
 - Real-time data at `/data/realtime?count=N` - fetch latest N data points
+- **Line Detection API**: `/line_detection/*` endpoints for green line detection and intersection analysis (NEW)
+- **Enhanced Real-time Endpoint**: `/enhanced_realtime` for combined data and visualization (NEW)
 - Control commands require password authentication via `/control/start_detection`, `/control/stop_detection`
 - Configuration management via `/config/get`, `/config/update` endpoints
 
@@ -206,6 +233,8 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Real-time plotting diagnostics in matplotlib window
 - Network error handling with retry logic and connection status display
 - ROI capture debugging with base64 image preview
+- **Line Detection Debugging**: API client integration testing with `line_detection_api_client.py` (NEW)
+- Test scripts available: `test_line_detection.py`, `test_line_intersection.py`, `test_memory_management.py` (NEW)
 
 ## Security Considerations
 
@@ -258,6 +287,9 @@ NHEM/
 - **WebSocket Streaming**: 60 FPS to real-time clients
 - **Buffer Sizes**: 100-10000 frames for memory management
 - **Peak Detection**: threshold (104.0), margin_frames (5), difference_threshold (1.1), min_region_length (5)
+- **Dual ROI**: ROI1 (1100x500) + ROI2 (50x50 center extraction) (NEW)
+- **Line Detection**: OpenCV-based green line detection with configurable HSV thresholds (NEW)
+- **Performance Monitoring**: Memory tracking, processing time metrics, alert thresholds (NEW)
 - **Default ROI**: x1=1480, y1=480, x2=1580, y2=580
 
 ### Client Configuration (`python_client/http_client_config.json`)
@@ -265,6 +297,8 @@ NHEM/
 - **ROI Settings**: Default region coordinates and capture parameters
 - **Peak Detection**: Client-side thresholds for local analysis
 - **Server Connection**: localhost:8421 with timeout settings
+- **Line Detection API**: Integration settings for line detection client (NEW)
+- **State Management**: Persistent configuration file path and recovery settings (NEW)
 
 ### Frontend Configuration (`front/config.json`)
 - **Update Rate**: 20 FPS canvas rendering
@@ -314,3 +348,36 @@ Professional templates available in `.claude/templates/`:
 - Use matplotlib for real-time plotting with hardware acceleration
 - Implement proper exception handling and retry logic
 - Support Python 3.8+ compatibility
+
+## Advanced Features
+
+### Dual ROI System
+The system supports coordinated dual ROI processing:
+- **ROI1**: Large capture region (1100x500 default) for user display
+- **ROI2**: Small center region (50x50) extracted from ROI1 for precise analysis
+- **Coordinate Transformation**: Automatic mapping between screen and image coordinates
+- **Adaptive Sizing**: ROI2 scales proportionally with ROI1 dimensions
+- **Independent Processing**: Separate frame rates for capture vs analysis
+
+### Line Detection and Intersection Analysis
+Advanced computer vision capabilities using OpenCV:
+- **Green Line Detection**: HSV color space filtering for green line identification
+- **Intersection Point Calculation**: Geometric analysis of line crossing points
+- **Performance Monitoring**: Memory usage tracking and processing time metrics
+- **Medical-Grade Error Handling**: Severity classification with automatic recovery
+- **Real-time Processing**: Configurable detection parameters and timeout controls
+
+### Enhanced API Endpoints
+New API capabilities for advanced functionality:
+- **Line Detection API**: `/line_detection/*` endpoints for detection control and results
+- **Enhanced Real-time**: `/enhanced_realtime` for combined data and visualization
+- **Performance Monitoring**: Built-in metrics collection and alerting
+- **State Management**: Persistent configuration and recovery mechanisms
+
+### Line Detection Client Integration
+Python client features for line detection:
+- **API Client Class**: Automatic retry, session management, and error handling
+- **GUI Widget**: Tkinter-based control panel for line detection operations
+- **State Persistence**: Configuration saved in `line_detection_state.json`
+- **Status Monitoring**: Real-time detection status and performance metrics
+- **Chinese Language Support**: Localized interface elements and documentation

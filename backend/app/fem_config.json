@@ -18,10 +18,10 @@
     "frame_rate": 4,
     "update_interval": 0.5,
     "default_config": {
-      "x1": 480,
+      "x1": 1280,
       "y1": 80,
-      "x2": 1580,
-      "y2": 580
+      "x2": 1920,
+      "y2": 980
     }
   },
   "peak_detection": {

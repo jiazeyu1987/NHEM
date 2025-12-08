@@ -36,12 +36,22 @@ class TimeSeriesPoint(BaseModel):
     value: float
 
 
+class LineIntersectionPoint(BaseModel):
+    """绿线交点坐标模型"""
+    x: int = Field(description="屏幕X坐标")
+    y: int = Field(description="屏幕Y坐标")
+    roi_x: Optional[int] = Field(default=None, description="ROI内X坐标")
+    roi_y: Optional[int] = Field(default=None, description="ROI内Y坐标")
+    confidence: float = Field(default=1.0, description="检测置信度")
+
+
 class RoiData(BaseModel):
     width: int
     height: int
     pixels: str
     gray_value: float
     format: str = "base64"
+    intersection: Optional[LineIntersectionPoint] = Field(default=None, description="绿线交点坐标")
 
 
 class RealtimeDataResponse(BaseModel):

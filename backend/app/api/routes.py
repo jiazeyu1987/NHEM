@@ -164,6 +164,7 @@ async def realtime_data(
                 pixels=create_roi_data_with_image(0.0)[0],
                 gray_value=0.0,
                 format="base64",
+                intersection=None,
             ),
             peak_signal=None,
             baseline=data_store.get_baseline(),
@@ -185,6 +186,7 @@ async def realtime_data(
                 pixels=create_roi_data_with_image(0.0)[0],
                 gray_value=0.0,
                 format="base64",
+                intersection=None,
             ),
             peak_signal=None,
             baseline=0.0,
@@ -215,6 +217,7 @@ async def realtime_data(
                     pixels="roi_capture_failed",
                     gray_value=baseline,  # 使用基线值作为fallback
                     format="text",
+                    intersection=None,
                 )
         except Exception as e:
             logger.error("Error capturing ROI in realtime_data: %s", str(e))
@@ -224,6 +227,7 @@ async def realtime_data(
                 pixels="roi_capture_error",
                 gray_value=baseline,  # 使用基线值作为fallback
                 format="text",
+                intersection=None,
             )
     else:
         # ROI未配置，返回空数据
@@ -233,6 +237,7 @@ async def realtime_data(
             pixels="roi_not_configured",
             gray_value=baseline,  # 使用基线值
             format="text",
+            intersection=None,
         )
 
     # 生成时间序列数据
@@ -303,7 +308,7 @@ async def dual_realtime_data(
 
         # 返回空的双ROI数据
         empty_roi_config = RoiConfig(x1=0, y1=0, x2=1, y2=1)
-        empty_roi_data = RoiData(width=1, height=1, pixels="", gray_value=0.0, format="base64")
+        empty_roi_data = RoiData(width=1, height=1, pixels="", gray_value=0.0, format="base64", intersection=None)
 
         return DualRealtimeDataResponse(
             timestamp=now,
@@ -327,7 +332,7 @@ async def dual_realtime_data(
         logger.info("⚠️ Dual ROI data requested but ROI not configured - returning empty response")
 
         empty_roi_config = RoiConfig(x1=0, y1=0, x2=1, y2=1)
-        empty_roi_data = RoiData(width=0, height=0, pixels="roi_not_configured", gray_value=0.0, format="text")
+        empty_roi_data = RoiData(width=0, height=0, pixels="roi_not_configured", gray_value=0.0, format="text", intersection=None)
 
         return DualRealtimeDataResponse(
             timestamp=now,
@@ -368,6 +373,7 @@ async def dual_realtime_data(
                 pixels="roi1_capture_failed",
                 gray_value=baseline,
                 format="text",
+                intersection=None,
             )
             current_value = baseline
             data_source = "ROI1_Failed"
@@ -382,6 +388,7 @@ async def dual_realtime_data(
                 pixels="roi2_extract_failed",
                 gray_value=roi2_fallback_gray,
                 format="text",
+                intersection=None,
             )
             current_value = roi2_fallback_gray
             data_source = "ROI2_Fallback"
@@ -408,6 +415,7 @@ async def dual_realtime_data(
             pixels="roi1_capture_error",
             gray_value=baseline,
             format="text",
+            intersection=None,
         )
         # 在异常情况下，使用baseline作为ROI2的灰度值，但记录详细信息
         roi2_data = RoiData(
@@ -416,6 +424,7 @@ async def dual_realtime_data(
             pixels="roi2_capture_error",
             gray_value=baseline,  # 使用baseline作为最后的回退
             format="text",
+            intersection=None,
         )
         current_value = baseline
         data_source = "Error"
