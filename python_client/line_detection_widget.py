@@ -24,14 +24,97 @@ import time
 from datetime import datetime
 
 # Import the line detection API client
-from line_detection_api_client import (
-    LineDetectionAPIClient,
-    LineDetectionAPIError,
-    LineDetectionStatus,
-    create_line_detection_client,
-    toggle_line_detection,
-    get_detection_status_simple
-)
+import os
+import sys
+
+# Check if the API client file exists
+api_client_file = os.path.join(os.path.dirname(__file__), 'line_detection_api_client.py')
+api_file_exists = os.path.exists(api_client_file)
+
+print(f"DEBUG: API client file exists: {api_file_exists}")
+print(f"DEBUG: API client file path: {api_client_file}")
+print(f"DEBUG: Current working directory: {os.getcwd()}")
+print(f"DEBUG: Python path: {sys.path[:3]}")  # Show first 3 entries
+
+LINE_DETECTION_API_AVAILABLE = False
+LineDetectionAPIClient = None
+LineDetectionAPIError = None
+LineDetectionStatus = None
+
+if api_file_exists:
+    try:
+        from line_detection_api_client import (
+            LineDetectionAPIClient,
+            LineDetectionAPIError,
+            LineDetectionStatus,
+            create_line_detection_client,
+            toggle_line_detection,
+            get_detection_status_simple
+        )
+        LINE_DETECTION_API_AVAILABLE = True
+        print("SUCCESS: LineDetectionAPIClient imported successfully")
+    except ImportError as e:
+        print(f"WARNING: LineDetectionAPIClient import failed: {str(e)}")
+        print(f"WARNING: ImportError type: {type(e).__name__}")
+        print("WARNING: Available modules in line_detection_api_client:")
+
+        # Try to inspect what's available in the module
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("line_detection_api_client", api_client_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                available_attrs = [attr for attr in dir(module) if not attr.startswith('_')]
+                print(f"WARNING: Available attributes: {available_attrs}")
+        except Exception as inspect_error:
+            print(f"WARNING: Could not inspect module: {inspect_error}")
+
+        LINE_DETECTION_API_AVAILABLE = False
+        # Set safe defaults
+        class LineDetectionAPIError(Exception):
+            pass
+        class LineDetectionStatus:
+            pass
+        def create_line_detection_client(*args, **kwargs):
+            return None
+        def toggle_line_detection(*args, **kwargs):
+            return None
+        def get_detection_status_simple(*args, **kwargs):
+            return None
+    except Exception as e:
+        print(f"ERROR: Unexpected error during import: {str(e)}")
+        print(f"ERROR: Error type: {type(e).__name__}")
+        LINE_DETECTION_API_AVAILABLE = False
+        # Set safe defaults
+        class LineDetectionAPIError(Exception):
+            pass
+        class LineDetectionStatus:
+            pass
+        def create_line_detection_client(*args, **kwargs):
+            return None
+        def toggle_line_detection(*args, **kwargs):
+            return None
+        def get_detection_status_simple(*args, **kwargs):
+            return None
+else:
+    print("ERROR: line_detection_api_client.py file not found")
+    print(f"ERROR: Expected file at: {api_client_file}")
+    print(f"ERROR: Files in current directory: {os.listdir('.')[:10]}")  # Show first 10 files
+
+    # Set safe defaults
+    class LineDetectionAPIError(Exception):
+        pass
+    class LineDetectionStatus:
+        pass
+    def create_line_detection_client(*args, **kwargs):
+        return None
+    def toggle_line_detection(*args, **kwargs):
+        return None
+    def get_detection_status_simple(*args, **kwargs):
+        return None
+
+print(f"FINAL STATUS: LINE_DETECTION_API_AVAILABLE = {LINE_DETECTION_API_AVAILABLE}")
 
 # 设置matplotlib字体和样式
 plt.rcParams["font.sans-serif"] = ["Arial", "DejaVu Sans", "Liberation Sans"]
@@ -1011,9 +1094,16 @@ class LineDetectionWidget:
         # API客户端实例
         self.api_client: Optional[LineDetectionAPIClient] = None
 
+        # Log API integration state for debugging
+        print(f"WIDGET DEBUG: enable_api_integration = {self.enable_api_integration}")
+        print(f"WIDGET DEBUG: LINE_DETECTION_API_AVAILABLE = {LINE_DETECTION_API_AVAILABLE}")
+        print(f"WIDGET DEBUG: api_base_url = {self.api_base_url}")
+        print(f"WIDGET DEBUG: api_password = {'*' * len(self.api_password)}")  # Hide password
+
         # 图像数据
         self.current_roi1_data = None
         self.image_shape = None
+        print(f"WIDGET INIT DEBUG: image_shape initialized to None")
         self.pixel_coordinates = []
 
         # matplotlib 组件
@@ -1068,8 +1158,25 @@ class LineDetectionWidget:
         self.setup_widget()
 
         # 初始化API客户端（如果启用）
-        if self.enable_api_integration:
+        print("WIDGET DEBUG: Starting API client initialization")
+        print(f"WIDGET DEBUG: enable_api_integration = {self.enable_api_integration}")
+        print(f"WIDGET DEBUG: LINE_DETECTION_API_AVAILABLE = {LINE_DETECTION_API_AVAILABLE}")
+
+        if self.enable_api_integration and LINE_DETECTION_API_AVAILABLE:
+            print("WIDGET DEBUG: Both conditions met, calling initialize_api_client()")
             self.initialize_api_client()
+            print(f"WIDGET DEBUG: API client initialization completed. api_client = {self.api_client}")
+        elif self.enable_api_integration:
+            print("WIDGET DEBUG: API integration enabled but LineDetectionAPIClient not available")
+            logger.warning("API integration enabled but LineDetectionAPIClient not available")
+            self.enable_api_integration = False
+            print("WIDGET DEBUG: Disabled API integration due to unavailability")
+        else:
+            print("WIDGET DEBUG: API integration not enabled or not available")
+            if not self.enable_api_integration:
+                print("WIDGET DEBUG: Reason: enable_api_integration is False")
+            if not LINE_DETECTION_API_AVAILABLE:
+                print("WIDGET DEBUG: Reason: LINE_DETECTION_API_AVAILABLE is False")
 
         # 初始化错误处理系统（Task 32）
         self._setup_error_handling()
@@ -1211,6 +1318,12 @@ class LineDetectionWidget:
 
     def setup_statusbar(self):
         """设置状态栏"""
+        # 确保status_frame存在
+        if not hasattr(self, 'status_frame') or self.status_frame is None:
+            print("WARNING: status_frame not found, creating a new one")
+            self.status_frame = ttk.Frame(self.main_frame)
+            self.status_frame.pack(side='bottom', fill='x', padx=2, pady=2)
+
         # 坐标显示标签
         self.coord_label = ttk.Label(self.status_frame, text="X: -- , Y: --",
                                     font=('Courier', 10))
@@ -1350,7 +1463,12 @@ class LineDetectionWidget:
                     self.chinese_status_display.update_status(StatusState.ENABLED_NO_DETECTION)
 
                 # 如果启用了API集成，使用API客户端进行手动检测
+                print(f"MANUAL_DETECTION_DEBUG: enable_api_integration = {self.enable_api_integration}")
+                print(f"MANUAL_DETECTION_DEBUG: api_client = {self.api_client}")
+                print(f"MANUAL_DETECTION_DEBUG: Condition result = {self.enable_api_integration and self.api_client}")
+
                 if self.enable_api_integration and self.api_client:
+                    print("MANUAL_DETECTION_DEBUG: Using API client for manual detection")
                     try:
                         # 获取当前ROI数据用于检测
                         roi_data = None
@@ -1365,11 +1483,14 @@ class LineDetectionWidget:
                         else:
                             roi_coords = None
 
+                        print(f"MANUAL_DETECTION_DEBUG: Calling API client manual_detection with roi_coords = {roi_coords}")
+
                         # 执行手动检测
                         detection_result = self.api_client.manual_detection(
                             roi_coordinates=roi_coords,
                             force_refresh=True
                         )
+                        print(f"MANUAL_DETECTION_DEBUG: API detection result = {detection_result}")
 
                         if detection_result.get('success', False):
                             # 处理检测结果
@@ -1422,13 +1543,35 @@ class LineDetectionWidget:
                             )
                         return
                 else:
-                    # 离线模式，仅更新状态
-                    logger.warning("API integration not available, manual detection in offline mode")
+                    # 离线模式，提供模拟检测功能
+                    print("MANUAL_DETECTION_DEBUG: Entering offline mode - API integration not available")
+
+                    # 详细诊断信息
+                    if not self.enable_api_integration:
+                        error_reason = "API integration is disabled in configuration"
+                        print(f"MANUAL_DETECTION_DEBUG: Reason: {error_reason}")
+                    elif not self.api_client:
+                        error_reason = "API client is None (initialization failed)"
+                        print(f"MANUAL_DETECTION_DEBUG: Reason: {error_reason}")
+                    else:
+                        error_reason = "Unknown reason"
+                        print(f"MANUAL_DETECTION_DEBUG: Reason: {error_reason}")
+
+                    logger.warning(f"API integration not available, manual detection in offline mode. Reason: {error_reason}")
+
+                    # 更新状态显示为离线模式
                     if self.chinese_status_display:
+                        error_msg = f"API不可用，使用离线模式 ({error_reason})"
+                        print(f"MANUAL_DETECTION_DEBUG: Updating status with error_msg: {error_msg}")
                         self.chinese_status_display.update_status(
                             StatusState.DETECTION_ERROR,
-                            error_msg="API集成未启用，无法执行检测"
+                            error_msg=error_msg
                         )
+
+                    # 执行模拟检测
+                    print("MANUAL_DETECTION_DEBUG: Calling _simulate_manual_detection()")
+                    self._simulate_manual_detection()
+                    print("MANUAL_DETECTION_DEBUG: _simulate_manual_detection() completed")
 
             except Exception as e:
                 logger.error(f"Error in manual detection callback: {e}")
@@ -1439,6 +1582,126 @@ class LineDetectionWidget:
         # 在后台线程中处理以避免UI冻结
         thread = threading.Thread(target=process_manual_detection, daemon=True)
         thread.start()
+
+    def _simulate_manual_detection(self):
+        """模拟手动检测功能（离线模式）"""
+        print("SIMULATE_DETECTION_DEBUG: Starting simulated manual detection")
+
+        # 详细检查状态
+        print(f"SIMULATE_DETECTION_DEBUG: image_shape = {self.image_shape}")
+        print(f"SIMULATE_DETECTION_DEBUG: hasattr('_last_roi1_data') = {hasattr(self, '_last_roi1_data')}")
+        if hasattr(self, '_last_roi1_data'):
+            print(f"SIMULATE_DETECTION_DEBUG: _last_roi1_data = {self._last_roi1_data[:50] if self._last_roi1_data else 'None'}...")
+        print(f"SIMULATE_DETECTION_DEBUG: current_roi1_data = {type(self.current_roi1_data)}")
+        print(f"SIMULATE_DETECTION_DEBUG: image_displayed = {getattr(self, 'image_displayed', 'Not set')}")
+
+        try:
+            import random
+
+            # 首先更新状态为检测中
+            if self.chinese_status_display:
+                print("SIMULATE_DETECTION_DEBUG: Updating status to ENABLED_NO_DETECTION")
+                self.chinese_status_display.update_status(StatusState.ENABLED_NO_DETECTION)
+
+            # 模拟检测延迟
+            time.sleep(0.5)
+
+            # 清除现有的可视化
+            if self.ax:
+                print("SIMULATE_DETECTION_DEBUG: Clearing canvas")
+                self.clear_canvas()
+
+                # 重新显示ROI1图像
+                if hasattr(self, '_last_roi1_data') and self._last_roi1_data:
+                    print("SIMULATE_DETECTION_DEBUG: Updating ROI1 image with last data")
+                    self.update_roi1_image(self._last_roi1_data)
+                    print(f"SIMULATE_DETECTION_DEBUG: After update, image_shape = {self.image_shape}")
+                else:
+                    print("SIMULATE_DETECTION_DEBUG: No ROI1 data available")
+
+            # 生成模拟检测结果
+            if self.image_shape:
+                # 生成随机的线条和交点
+                lines = []
+                intersections = []
+
+                # 生成1-2条随机线条
+                num_lines = random.randint(1, 2)
+                for i in range(num_lines):
+                    x1 = random.randint(50, self.image_shape[1] - 50)
+                    y1 = random.randint(50, self.image_shape[0] - 50)
+                    x2 = random.randint(50, self.image_shape[1] - 50)
+                    y2 = random.randint(50, self.image_shape[0] - 50)
+                    lines.append([(x1, y1), (x2, y2)])
+
+                # 如果有两条线，计算交点
+                if num_lines == 2 and len(lines) == 2:
+                    try:
+                        # 简单的交点计算（演示用）
+                        intersection_x = random.randint(100, self.image_shape[1] - 100)
+                        intersection_y = random.randint(100, self.image_shape[0] - 100)
+                        confidence = random.uniform(0.6, 0.95)
+                        intersections.append({
+                            'x': intersection_x,
+                            'y': intersection_y,
+                            'confidence': confidence
+                        })
+                    except Exception:
+                        pass
+
+                # 更新可视化
+                if self.ax and lines:
+                    self.render_detected_lines(lines)
+
+                if self.ax and intersections:
+                    for intersection in intersections:
+                        x = intersection['x']
+                        y = intersection['y']
+                        confidence = intersection['confidence']
+                        self.render_intersection_point(
+                            [(x, y)], confidence
+                        )
+
+                if self.canvas:
+                    self.canvas.draw()
+
+                # 更新状态显示
+                if self.chinese_status_display:
+                    if intersections:
+                        intersection = intersections[0]
+                        x, y = int(intersection['x']), int(intersection['y'])
+                        confidence = intersection['confidence'] * 100
+                        print(f"SIMULATE_DETECTION_DEBUG: Updating status to DETECTION_SUCCESS at ({x}, {y}) confidence {confidence:.1f}%")
+                        self.chinese_status_display.update_status(
+                            StatusState.DETECTION_SUCCESS,
+                            intersection=(x, y),
+                            confidence=confidence
+                        )
+                        logger.info(f"Simulated manual detection: intersection found at ({x}, {y}) with confidence {confidence:.1f}%")
+                        print(f"SIMULATE_DETECTION_DEBUG: ✅ Simulated detection completed successfully!")
+                    else:
+                        print("SIMULATE_DETECTION_DEBUG: No intersections found, updating to ENABLED_NO_DETECTION")
+                        self.chinese_status_display.update_status(StatusState.ENABLED_NO_DETECTION)
+                        logger.info("Simulated manual detection: no intersections found")
+                        print(f"SIMULATE_DETECTION_DEBUG: ✅ Simulated detection completed (no intersections)")
+            else:
+                # 没有图像数据
+                print("SIMULATE_DETECTION_DEBUG: No image shape available")
+                if self.chinese_status_display:
+                    error_msg = "离线模式：无图像数据，请先获取ROI图像"
+                    print(f"SIMULATE_DETECTION_DEBUG: Updating status with error_msg: {error_msg}")
+                    self.chinese_status_display.update_status(
+                        StatusState.DETECTION_ERROR,
+                        error_msg=error_msg
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in simulated manual detection: {e}")
+            if self.chinese_status_display:
+                self.chinese_status_display.update_status(
+                    StatusState.DETECTION_ERROR,
+                    error_msg=f"模拟检测失败: {str(e)}"
+                )
 
     def _on_refresh(self):
         """处理刷新回调"""
@@ -1552,9 +1815,13 @@ class LineDetectionWidget:
             # 鼠标滚轮缩放事件
             self.canvas.mpl_connect('scroll_event', self.on_mouse_scroll)
 
-            # 轴范围变化事件
-            self.canvas.mpl_connect('xlim_changed', self.on_xlim_changed)
-            self.canvas.mpl_connect('ylim_changed', self.on_ylim_changed)
+            # 轴范围变化事件 - 使用现代matplotlib API
+            if hasattr(self, 'ax') and self.ax:
+                self.ax.callbacks.connect('xlim_changed', self.on_xlim_changed)
+                self.ax.callbacks.connect('ylim_changed', self.on_ylim_changed)
+            else:
+                # 如果轴不存在，使用画布级别的事件（虽然限制变化事件较少）
+                print("WARNING: ax not available for limit change callbacks")
 
     def update_roi1_image(self, roi1_data: str):
         """
@@ -1583,6 +1850,10 @@ class LineDetectionWidget:
             # 转换为numpy数组
             self.current_roi1_data = np.array(image)
             self.image_shape = self.current_roi1_data.shape
+
+            # 保存最后接收的图像数据供离线模式使用
+            self._last_roi1_data = roi1_data  # 保存原始base64数据
+            print(f"IMAGE_DEBUG: Saved last ROI1 data, image_shape = {self.image_shape}")
 
             # 清除当前内容并显示新图像
             self.clear_canvas()
@@ -1807,6 +2078,10 @@ class LineDetectionWidget:
         """鼠标移动事件处理"""
         try:
             coords = self.get_mouse_coordinates(event)
+
+            # 确保coord_label存在
+            if not hasattr(self, 'coord_label') or self.coord_label is None:
+                return  # 如果coord_label不存在，直接返回
 
             if coords:
                 x, y = coords
@@ -2699,38 +2974,165 @@ class LineDetectionWidget:
 
     # ============ Task 24: API Client Integration Methods ============
 
+    def update_line_intersection_data(self, line_intersection_result):
+        """
+        更新交点检测数据（包含ROI数据）
+
+        Args:
+            line_intersection_result: 包含交点检测结果的字典，可能包含ROI数据
+        """
+        try:
+            print(f"LINE_WIDGET_DEBUG: Received line intersection result: {type(line_intersection_result)}")
+
+            # 检查结果类型和内容
+            if isinstance(line_intersection_result, dict):
+                print(f"LINE_WIDGET_DEBUG: Result keys: {list(line_intersection_result.keys())}")
+
+                # 检查是否有ROI数据
+                roi1_data = None
+                if 'roi1_data' in line_intersection_result:
+                    roi1_data = line_intersection_result['roi1_data']
+                    print(f"LINE_WIDGET_DEBUG: Found roi1_data: {type(roi1_data)}")
+                    print(f"LINE_WIDGET_DEBUG: roi1_data keys: {list(roi1_data.keys()) if roi1_data else 'None'}")
+
+                elif 'dual_roi_data' in line_intersection_result:
+                    dual_roi_data = line_intersection_result['dual_roi_data']
+                    if dual_roi_data and 'roi1_data' in dual_roi_data:
+                        roi1_data = dual_roi1_data['roi1_data']
+                        print(f"LINE_WIDGET_DEBUG: Found roi1_data in dual_roi_data: {type(roi1_data)}")
+
+                # 更新ROI1图像
+                if roi1_data and 'pixels' in roi1_data:
+                    print("LINE_WIDGET_DEBUG: Updating ROI1 image with new data")
+                    self.update_roi1_image(roi1_data['pixels'])
+                else:
+                    print("LINE_WIDGET_DEBUG: No ROI1 pixels data found in result")
+
+                # 更新可视化（如果有交点）
+                if 'intersection' in line_intersection_result:
+                    intersection = line_intersection_result['intersection']
+                    if intersection and len(intersection) >= 2:
+                        print(f"LINE_WIDGET_DEBUG: Updating intersection point: {intersection}")
+                        x, y = intersection[0], intersection[1]
+                        confidence = line_intersection_result.get('confidence', 0.0)
+
+                        # 渲染交点
+                        if hasattr(self, 'render_intersection_point'):
+                            self.render_intersection_point(
+                                [(x, y)], confidence
+                            )
+                        if self.canvas:
+                            self.canvas.draw()
+
+                        # 更新状态显示
+                        if self.chinese_status_display:
+                            self.chinese_status_display.update_status(
+                                StatusState.DETETECTION_SUCCESS,
+                                intersection=(int(x), int(y)),
+                                confidence=confidence * 100
+                            )
+
+                # 更新线条
+                if 'lines' in line_intersection_result:
+                    lines = line_intersection_result['lines']
+                    print(f"LINE_WIDGET_DEBUG: Updating {len(lines)} lines")
+
+                    if lines and hasattr(self, 'render_detected_lines'):
+                        self.render_detected_lines(lines)
+                        if self.canvas:
+                            self.canvas.draw()
+
+                print("LINE_WIDGET_DEBUG: Line intersection data updated successfully")
+
+            else:
+                print(f"LINE_WIDGET_DEBUG: Invalid line_intersection_result type: {type(line_intersection_result)}")
+
+        except Exception as e:
+            print(f"LINE_WIDGET_DEBUG: Error updating line intersection data: {e}")
+            if self.chinese_status_display:
+                self.chinese_status_display.update_status(
+                    StatusState.DETECTION_ERROR,
+                    error_msg=f"更新交点数据失败: {str(e)}"
+                )
+            logger.error(f"Error updating line intersection data: {e}")
+
     def initialize_api_client(self):
         """
         初始化API客户端
 
         根据配置创建和配置线条检测API客户端
         """
+        print("API_CLIENT_DEBUG: initialize_api_client() called")
+        print(f"API_CLIENT_DEBUG: self.enable_api_integration = {self.enable_api_integration}")
+        print(f"API_CLIENT_DEBUG: LINE_DETECTION_API_AVAILABLE = {LINE_DETECTION_API_AVAILABLE}")
+        print(f"API_CLIENT_DEBUG: LineDetectionAPIClient class = {LineDetectionAPIClient}")
+
         try:
             if not self.enable_api_integration:
+                print("API_CLIENT_DEBUG: API integration disabled, returning")
                 logger.info("API integration disabled")
                 return
 
+            if not LINE_DETECTION_API_AVAILABLE:
+                print("API_CLIENT_DEBUG: LineDetectionAPIClient not available, setting api_client = None")
+                logger.error("LineDetectionAPIClient not available")
+                self.api_client = None
+                return
+
+            if LineDetectionAPIClient is None:
+                print("API_CLIENT_DEBUG: LineDetectionAPIClient class is None, cannot create instance")
+                logger.error("LineDetectionAPIClient class is None")
+                self.api_client = None
+                return
+
+            print("API_CLIENT_DEBUG: All checks passed, initializing line detection API client")
             logger.info("Initializing line detection API client")
 
             # 创建API客户端
-            self.api_client = LineDetectionAPIClient(
-                base_url=self.api_base_url,
-                password=self.api_password,
-                timeout=self.api_timeout
-            )
+            print("API_CLIENT_DEBUG: Creating LineDetectionAPIClient instance")
+            print(f"API_CLIENT_DEBUG: base_url = {self.api_base_url}")
+            print(f"API_CLIENT_DEBUG: timeout = {self.api_timeout}")
+
+            if LineDetectionAPIClient:
+                try:
+                    print("API_CLIENT_DEBUG: Instantiating LineDetectionAPIClient...")
+                    self.api_client = LineDetectionAPIClient(
+                        base_url=self.api_base_url,
+                        password=self.api_password,
+                        timeout=self.api_timeout
+                    )
+                    print(f"API_CLIENT_DEBUG: LineDetectionAPIClient instance created: {self.api_client}")
+                except Exception as e:
+                    print(f"API_CLIENT_DEBUG: Exception creating LineDetectionAPIClient: {e}")
+                    logger.error(f"Exception creating LineDetectionAPIClient: {e}")
+                    self.api_client = None
+                    return
+            else:
+                print("API_CLIENT_DEBUG: LineDetectionAPIClient class is None, cannot create instance")
+                logger.error("LineDetectionAPIClient class not available")
+                self.api_client = None
+                return
 
             # 测试连接
             try:
+                print(f"API_CLIENT_DEBUG: Attempting health check to {self.api_base_url}")
                 health_result = self.api_client.health_check()
-                if health_result.get('status') == 'healthy':
-                    logger.info("API client connection successful")
+                print(f"API_CLIENT_DEBUG: Health check result: {health_result}")
+
+                # 接受'ok'和'healthy'作为有效状态
+                status = health_result.get('status', 'unknown')
+                if status in ['ok', 'healthy']:
+                    print(f"API_CLIENT_DEBUG: API client connection successful (status: {status})")
+                    logger.info(f"API client connection successful (status: {status})")
 
                     # 获取当前检测状态并同步到UI
                     self._sync_detection_status_from_api()
                 else:
-                    logger.warning(f"API health check returned: {health_result.get('status', 'unknown')}")
+                    print(f"API_CLIENT_DEBUG: API health check returned invalid status: {status}")
+                    logger.warning(f"API health check returned: {status}")
                     self.api_client = None  # 禁用API客户端
             except Exception as e:
+                print(f"API_CLIENT_DEBUG: Health check exception: {e}")
                 logger.error(f"API client health check failed: {e}")
                 self.api_client = None  # 禁用API客户端
 

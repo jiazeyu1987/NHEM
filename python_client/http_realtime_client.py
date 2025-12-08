@@ -297,9 +297,10 @@ class HTTPRealtimeClient:
             if include_line_intersection:
                 params["include_line_intersection"] = "true"
 
-            # 使用增强双ROI端点获取数据
+            # 使用增强双ROI端点获取数据 - 注意：后端没有dual-realtime/enhanced端点
+            # 使用dual-realtime端点并在客户端处理line_intersection数据
             response = self.session.get(
-                f"{self.base_url}/data/dual-realtime/enhanced",
+                f"{self.base_url}/data/dual-realtime",
                 params=params,
                 timeout=5  # 增加超时时间以适应可能的数据处理时间
             )
@@ -421,7 +422,7 @@ class HTTPRealtimeClient:
                     # 尝试使用增强数据获取
                     if self.dual_roi_mode:
                         data = self.get_enhanced_dual_roi_data()
-                        data_type = "enhanced_dual_realtime_data"
+                        data_type = "dual_realtime_data"  # 后端返回的类型是dual_realtime_data
                     else:
                         data = self.get_enhanced_realtime_data()
                         data_type = "enhanced_realtime_data"
@@ -459,6 +460,15 @@ class HTTPRealtimeClient:
                             self.roi_update_callback(data)
                         except Exception as e:
                             logger.error(f"Error in ROI update callback: {e}")
+
+                    # 对于dual ROI数据，也要触发line intersection回调以传递ROI数据给LineDetectionWidget
+                    if self.dual_roi_mode and data_type in ["dual_realtime_data", "enhanced_dual_realtime_data"] and self.line_intersection_callback:
+                        try:
+                            # 将整个dual_roi_data传递给LineDetectionWidget
+                            dual_roi_data = data.get("dual_roi_data", {})
+                            self.line_intersection_callback(dual_roi_data)
+                        except Exception as e:
+                            logger.error(f"Error in line intersection callback for ROI data: {e}")
 
                     self.data_count += 1
                     self.last_update_time = time.time()
@@ -1408,6 +1418,13 @@ class HTTPRealtimeClientUI(tk.Tk):
                     self.line_detection_frame,
                     config=line_detection_config
                 )
+
+                # 设置ROI数据回调 - 这是关键！
+                if self.http_client:
+                    self.http_client.set_line_intersection_callback(
+                        self._handle_line_intersection_update
+                    )
+                    print("HTTP_CLIENT_DEBUG: Set line_intersection callback for LineDetectionWidget")
 
                 # 打包LineDetectionWidget
                 self.line_detection_widget.pack(fill="both", expand=True, padx=8, pady=8)

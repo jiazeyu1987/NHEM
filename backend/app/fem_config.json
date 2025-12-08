@@ -34,7 +34,7 @@
     "password": "31415"
   },
   "line_detection": {
-    "enabled": false,
+    "enabled": true,
     "hsv_green_lower": [
       40,
       50,

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(claude-code-spec-workflow:*)"
+      "Bash(claude-code-spec-workflow:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []
