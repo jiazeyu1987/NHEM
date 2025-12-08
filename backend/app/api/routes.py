@@ -2713,7 +2713,14 @@ async def manual_line_intersection_detection(
 
             # 解码base64图像数据
             try:
-                image_bytes = base64.b64decode(roi_data.pixels)
+                # 处理data URL前缀，避免base64解码错误
+                if roi_data.pixels.startswith('data:image/png;base64,'):
+                    base64_data = roi_data.pixels.replace('data:image/png;base64,', '')
+                elif roi_data.pixels.startswith('data:image/jpeg;base64,'):
+                    base64_data = roi_data.pixels.replace('data:image/jpeg;base64,', '')
+                else:
+                    base64_data = roi_data.pixels
+                image_bytes = base64.b64decode(base64_data)
                 pil_image = Image.open(io.BytesIO(image_bytes))
                 roi_image = np.array(pil_image.convert('RGB'))
                 logger.debug("✅ ROI image decoded successfully: shape=%s", roi_image.shape)

@@ -114,12 +114,33 @@ class LineDetectionAPIClient:
         self.request_count += 1
         self.last_request_time = time.time()
 
+        # 判断端点是否需要JSON格式（基于后端API设计）
+        json_endpoints = ['/api/roi/line-intersection']
+        use_json = endpoint in json_endpoints and method.upper() == 'POST'
+
         # 添加认证参数
         if method.upper() in ['POST', 'PUT', 'DELETE']:
-            if 'data' in kwargs:
-                kwargs['data']['password'] = self.password
+            if use_json:
+                # 对于JSON端点，使用json参数
+                if 'json' in kwargs:
+                    kwargs['json']['password'] = self.password
+                elif 'data' in kwargs:
+                    # 如果传入的是data，将其转换为json
+                    kwargs['json'] = kwargs.pop('data')
+                    kwargs['json']['password'] = self.password
+                else:
+                    kwargs['json'] = {'password': self.password}
+
+                # 确保Content-Type头设置为application/json
+                if 'headers' not in kwargs:
+                    kwargs['headers'] = {}
+                kwargs['headers']['Content-Type'] = 'application/json'
             else:
-                kwargs['data'] = {'password': self.password}
+                # 对于表单端点，使用data参数
+                if 'data' in kwargs:
+                    kwargs['data']['password'] = self.password
+                else:
+                    kwargs['data'] = {'password': self.password}
         elif method.upper() == 'GET':
             if 'params' in kwargs:
                 kwargs['params']['password'] = self.password
@@ -131,6 +152,11 @@ class LineDetectionAPIClient:
         for attempt in range(self.max_retries + 1):
             try:
                 logger.debug(f"Making {method} request to {url} (attempt {attempt + 1})")
+
+                # 调试输出请求信息
+                if use_json:
+                    logger.debug(f"Request JSON data: {kwargs.get('json', {})}")
+                    logger.debug(f"Request headers: {kwargs.get('headers', {})}")
 
                 response = self.session.request(
                     method=method,
@@ -313,12 +339,12 @@ class LineDetectionAPIClient:
             request_data = {}
 
             if roi_coordinates:
-                request_data.update({
+                request_data['roi_coordinates'] = {
                     'x1': roi_coordinates['x1'],
                     'y1': roi_coordinates['y1'],
                     'x2': roi_coordinates['x2'],
                     'y2': roi_coordinates['y2']
-                })
+                }
 
             if image_data:
                 request_data['image_data'] = image_data

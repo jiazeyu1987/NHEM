@@ -254,6 +254,11 @@ class DataStore:
         with self._lock:
             return self._status
 
+    def get_frame_count(self) -> int:
+        """Get current frame count."""
+        with self._lock:
+            return self._frame_count
+
     def reset(self) -> None:
         with self._lock:
             self._frames.clear()

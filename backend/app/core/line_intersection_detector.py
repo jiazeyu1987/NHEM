@@ -71,19 +71,23 @@ class MedicalGradeError(Exception):
 
     def _generate_error_code(self) -> str:
         """Generate unique error code with timestamp and category"""
-        timestamp = int(self.timestamp * 1000) % 100000
-        return f"NHEM-{self.category.value.upper()[:4]}-{timestamp}"
+        try:
+            timestamp = int(getattr(self, 'timestamp', time.time()) * 1000) % 100000
+            category = getattr(self, 'category', ErrorCategory.MATHEMATICAL_COMPUTATION)
+            return f"NHEM-{category.value.upper()[:4]}-{timestamp}"
+        except Exception:
+            return f"NHEM-ERROR-{int(time.time()) % 100000}"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert error to structured dictionary for logging/reporting"""
         return {
-            "error_code": self.error_code,
-            "message": self.message,
-            "category": self.category.value,
-            "severity": self.severity.value,
-            "timestamp": self.timestamp,
-            "context": self.context,
-            "stack_trace": self.stack_trace
+            "error_code": getattr(self, 'error_code', 'UNKNOWN'),
+            "message": getattr(self, 'message', str(self)),
+            "category": getattr(self, 'category', ErrorCategory.MATHEMATICAL_COMPUTATION).value,
+            "severity": getattr(self, 'severity', ErrorSeverity.MEDIUM).value,
+            "timestamp": getattr(self, 'timestamp', time.time()),
+            "context": getattr(self, 'context', {}),
+            "stack_trace": getattr(self, 'stack_trace', 'No stack trace available')
         }
 
 
@@ -3874,8 +3878,13 @@ class LineIntersectionDetector:
         self._performance_stats.memory_usage_compliance = avg_memory_usage <= self._perf_config.max_memory_usage_mb
 
         # 检查算法效率（基于处理FPS）
-        avg_fps = statistics.mean([m.processing_fps for m in self._performance_history if m.processing_fps > 0])
-        self._performance_stats.algorithm_efficiency_compliance = avg_fps >= 3.0  # 至少3 FPS
+        fps_values = [m.processing_fps for m in self._performance_history if m.processing_fps > 0]
+        if fps_values:
+            avg_fps = statistics.mean(fps_values)
+            self._performance_stats.algorithm_efficiency_compliance = avg_fps >= 3.0  # 至少3 FPS
+        else:
+            avg_fps = 0.0
+            self._performance_stats.algorithm_efficiency_compliance = False
 
     def generate_performance_report(self) -> Dict[str, Any]:
         """
