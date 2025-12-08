@@ -1,9 +1,10 @@
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 import logging
 from pathlib import Path
 
 from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings
+from .models import LineDetectionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ class AppConfig(BaseSettings):
     # 日志配置
     log_level: str = "INFO"  # 日志级别: DEBUG, INFO, WARNING, ERROR
 
+    # 绿色线条相交检测配置
+    line_detection: LineDetectionConfig = LineDetectionConfig()
+
     class Config:
         env_prefix = "NHEM_"
         case_sensitive = False
@@ -70,6 +74,7 @@ class AppConfig(BaseSettings):
         logger.debug(f"数据配置 - fps: {self.fps}, buffer_size: {self.buffer_size}")
         logger.debug(f"ROI配置 - frame_rate: {self.roi_frame_rate}, update_interval: {self.roi_update_interval}")
         logger.debug(f"波峰检测配置 - threshold: {self.peak_threshold}, margin_frames: {self.peak_margin_frames}")
+        logger.debug(f"线条检测配置 - enabled: {self.line_detection.enabled}, min_confidence: {self.line_detection.min_confidence}")
 
     def _load_json_config(self) -> Optional[dict]:
         """
@@ -155,6 +160,63 @@ class AppConfig(BaseSettings):
             logging_config = json_config["logging"]
             if "level" in logging_config:
                 kwargs["log_level"] = logging_config["level"]
+
+        # 绿色线条相交检测配置
+        if "line_detection" in json_config:
+            line_detection_config = json_config["line_detection"]
+            line_detection_kwargs = {}
+
+            # 基础开关配置
+            if "enabled" in line_detection_config:
+                line_detection_kwargs["enabled"] = line_detection_config["enabled"]
+
+            # HSV颜色空间绿色阈值配置
+            if "hsv_green_lower" in line_detection_config:
+                line_detection_kwargs["hsv_green_lower"] = tuple(line_detection_config["hsv_green_lower"])
+            if "hsv_green_upper" in line_detection_config:
+                line_detection_kwargs["hsv_green_upper"] = tuple(line_detection_config["hsv_green_upper"])
+
+            # Canny边缘检测阈值配置
+            if "canny_low_threshold" in line_detection_config:
+                line_detection_kwargs["canny_low_threshold"] = line_detection_config["canny_low_threshold"]
+            if "canny_high_threshold" in line_detection_config:
+                line_detection_kwargs["canny_high_threshold"] = line_detection_config["canny_high_threshold"]
+
+            # Hough直线变换参数配置
+            if "hough_threshold" in line_detection_config:
+                line_detection_kwargs["hough_threshold"] = line_detection_config["hough_threshold"]
+            if "hough_min_line_length" in line_detection_config:
+                line_detection_kwargs["hough_min_line_length"] = line_detection_config["hough_min_line_length"]
+            if "hough_max_line_gap" in line_detection_config:
+                line_detection_kwargs["hough_max_line_gap"] = line_detection_config["hough_max_line_gap"]
+
+            # 置信度相关配置
+            if "min_confidence" in line_detection_config:
+                line_detection_kwargs["min_confidence"] = line_detection_config["min_confidence"]
+
+            # 处理模式配置
+            if "roi_processing_mode" in line_detection_config:
+                line_detection_kwargs["roi_processing_mode"] = line_detection_config["roi_processing_mode"]
+
+            # 性能优化配置
+            if "cache_timeout_ms" in line_detection_config:
+                line_detection_kwargs["cache_timeout_ms"] = line_detection_config["cache_timeout_ms"]
+            if "max_processing_time_ms" in line_detection_config:
+                line_detection_kwargs["max_processing_time_ms"] = line_detection_config["max_processing_time_ms"]
+
+            # 线条过滤配置
+            if "min_angle_degrees" in line_detection_config:
+                line_detection_kwargs["min_angle_degrees"] = line_detection_config["min_angle_degrees"]
+            if "max_angle_degrees" in line_detection_config:
+                line_detection_kwargs["max_angle_degrees"] = line_detection_config["max_angle_degrees"]
+
+            # 平行线检测配置
+            if "parallel_threshold" in line_detection_config:
+                line_detection_kwargs["parallel_threshold"] = line_detection_config["parallel_threshold"]
+
+            # Create LineDetectionConfig instance if any parameters were provided
+            if line_detection_kwargs:
+                kwargs["line_detection"] = LineDetectionConfig(**line_detection_kwargs)
 
         return kwargs
 

@@ -20,7 +20,7 @@
     "default_config": {
       "x1": 480,
       "y1": 80,
-      "x2": 1580,
+      "x2": 1920,
       "y2": 580
     }
   },
@@ -32,6 +32,28 @@
   },
   "security": {
     "password": "31415"
+  },
+  "line_detection": {
+    "enabled": false,
+    "hsv_green_lower": [
+      40,
+      50,
+      50
+    ],
+    "hsv_green_upper": [
+      80,
+      255,
+      255
+    ],
+    "canny_low_threshold": 25,
+    "canny_high_threshold": 80,
+    "hough_threshold": 50,
+    "hough_min_line_length": 15,
+    "hough_max_line_gap": 8,
+    "min_confidence": 0.4,
+    "roi_processing_mode": "roi1_only",
+    "cache_timeout_ms": 100,
+    "max_processing_time_ms": 300
   },
   "logging": {
     "level": "INFO"

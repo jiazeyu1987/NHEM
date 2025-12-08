@@ -1,4 +1,26 @@
 {
+  "config_metadata": {
+    "version": "2.0.0",
+    "format_version": "1.0.0",
+    "schema_version": "1.0.0",
+    "compatibility_version": "1.0.0",
+    "created_at": "2025-12-08T08:48:32Z",
+    "updated_at": "2025-12-08T08:48:32Z",
+    "created_by": "nhem_client",
+    "description": "NHEM HTTP Client Configuration with Line Detection Support",
+    "migration_history": [
+      {
+        "version": "1.0.0",
+        "description": "Initial configuration with basic ROI and peak detection",
+        "migration_date": "2025-12-01T00:00:00Z"
+      },
+      {
+        "version": "2.0.0",
+        "description": "Added comprehensive line detection configuration",
+        "migration_date": "2025-12-08T08:48:32Z"
+      }
+    ]
+  },
   "roi": {
     "x1": "10",
     "y1": "10",
@@ -11,5 +33,223 @@
     "margin_frames": "5",
     "difference_threshold": "2.1"
   },
-  "timestamp": "2025-12-05 08:48:32"
+  "enhanced_data": {
+    "enabled": true,
+    "include_line_intersection": true,
+    "fallback_on_error": true,
+    "performance_monitoring": true
+  },
+  "line_detection": {
+    "enabled": true,
+    "auto_start": false,
+    "update_interval": 100,
+    "ui": {
+      "enable_widget": true,
+      "show_control_panel": true,
+      "show_statistics_panel": true,
+      "show_debug_panel": false,
+      "auto_expand_results": true,
+      "refresh_on_data_update": true,
+      "display_colors": {
+        "primary_line": "#00FF00",
+        "secondary_line": "#FF6B6B",
+        "intersection_point": "#FFD700",
+        "confidence_high": "#00FF00",
+        "confidence_medium": "#FFA500",
+        "confidence_low": "#FF0000",
+        "background": "#1E1E1E",
+        "panel_background": "#252526",
+        "border": "#3E3E42",
+        "text_primary": "#CCCCCC",
+        "text_secondary": "#969696",
+        "text_highlight": "#4EC9B0"
+      },
+      "font_settings": {
+        "family": "Consolas, Monaco, monospace",
+        "size_base": "9pt",
+        "size_small": "8pt",
+        "size_large": "11pt",
+        "weight_normal": "400",
+        "weight_bold": "600"
+      },
+      "layout": {
+        "panel_spacing": "8px",
+        "section_padding": "12px",
+        "button_height": "24px",
+        "input_height": "20px",
+        "border_radius": "4px"
+      },
+      "animation": {
+        "enable_transitions": true,
+        "transition_duration_ms": 200,
+        "enable_pulse_effect": true,
+        "pulse_interval_ms": 2000
+      }
+    },
+    "detection": {
+      "hsv_thresholds": {
+        "green_lower_h": 40,
+        "green_lower_s": 50,
+        "green_lower_v": 50,
+        "green_upper_h": 80,
+        "green_upper_s": 255,
+        "green_upper_v": 255,
+        "auto_adjust": false,
+        "adaptive_threshold": true,
+        "threshold_sensitivity": 0.1
+      },
+      "edge_detection": {
+        "canny_low_threshold": 25,
+        "canny_high_threshold": 80,
+        "canny_kernel_size": 3,
+        "canny_l2_gradient": false,
+        "blur_kernel_size": 5,
+        "blur_sigma": 1.0,
+        "morphology_kernel_size": 3,
+        "morphology_iterations": 2
+      },
+      "hough_parameters": {
+        "hough_threshold": 50,
+        "hough_min_line_length": 15,
+        "hough_max_line_gap": 8,
+        "rho_resolution": 1.0,
+        "theta_resolution": 1.0,
+        "max_lines": 100,
+        "line_merge_angle_threshold": 5.0,
+        "line_merge_distance_threshold": 10.0
+      },
+      "confidence_settings": {
+        "min_confidence": 0.4,
+        "high_confidence_threshold": 0.7,
+        "medium_confidence_threshold": 0.5,
+        "confidence_calculation_method": "weighted",
+        "intersection_tolerance": 10,
+        "line_angle_tolerance": 15,
+        "line_length_weight": 0.3,
+        "line_straightness_weight": 0.4,
+        "intersection_proximity_weight": 0.3
+      },
+      "roi_processing": {
+        "roi_processing_mode": "roi1_only",
+        "fallback_roi2": true,
+        "crop_roi_before_processing": true,
+        "resize_before_processing": false,
+        "resize_scale": 1.0,
+        "maintain_aspect_ratio": true
+      }
+    },
+    "performance": {
+      "cache_timeout_ms": 100,
+      "processing_timeout_ms": 300,
+      "max_processing_time_ms": 500,
+      "max_retries": 3,
+      "retry_delay_ms": 100,
+      "concurrent_processing": false,
+      "max_queue_size": 10,
+      "enable_performance_monitoring": true,
+      "performance_log_interval_ms": 5000,
+      "memory_limit_mb": 100,
+      "gpu_acceleration": false,
+      "optimize_for_realtime": true
+    },
+    "api": {
+      "endpoints": {
+        "line_detection_status": "/line-detection/status",
+        "line_detection_configure": "/line-detection/configure",
+        "line_detection_start": "/line-detection/start",
+        "line_detection_stop": "/line-detection/stop",
+        "line_detection_results": "/line-detection/results",
+        "line_detection_statistics": "/line-detection/statistics"
+      },
+      "authentication": {
+        "password": "31415",
+        "auth_header_name": "X-Password",
+        "enable_auth": true,
+        "auth_cache_ttl": 3600
+      },
+      "retry_settings": {
+        "max_retries": 3,
+        "initial_backoff_ms": 100,
+        "max_backoff_ms": 1000,
+        "backoff_multiplier": 2.0,
+        "retry_on_timeout": true,
+        "retry_on_server_error": true
+      },
+      "request_settings": {
+        "timeout_ms": 5000,
+        "connect_timeout_ms": 2000,
+        "read_timeout_ms": 3000,
+        "max_response_size_mb": 10,
+        "enable_compression": true
+      }
+    },
+    "synchronization": {
+      "auto_sync_with_backend": true,
+      "sync_interval_ms": 1000,
+      "sync_on_startup": true,
+      "sync_threshold_tolerance": 0.1,
+      "sync_validation_enabled": true,
+      "conflict_resolution": "client_priority"
+    },
+    "backup": {
+      "auto_backup_enabled": true,
+      "backup_interval_hours": 24,
+      "max_backup_files": 10,
+      "backup_directory": "./backups/line_detection/",
+      "backup_file_prefix": "line_detection_config",
+      "backup_on_config_change": true,
+      "compress_backups": true,
+      "include_timestamp_in_filename": true,
+      "backup_validation": true,
+      "auto_restore_on_error": false,
+      "backup_encryption": false
+    },
+    "import_export": {
+      "supported_formats": ["json", "yaml", "csv"],
+      "default_export_format": "json",
+      "include_metadata": true,
+      "include_timestamp": true,
+      "include_version_info": true,
+      "validation_on_import": true,
+      "merge_on_import": false,
+      "export_filter_sensitive_data": true,
+      "import_strict_validation": false,
+      "max_import_file_size_mb": 5,
+      "export_pretty_format": true,
+      "export_comments": true
+    },
+    "debugging": {
+      "enable_debug_mode": false,
+      "log_level": "INFO",
+      "log_detection_steps": false,
+      "save_intermediate_images": false,
+      "debug_image_output_path": "./debug_images/",
+      "performance_profiling": false,
+      "verbose_logging": false,
+      "console_output_enabled": true,
+      "file_logging_enabled": false,
+      "log_file_path": "./logs/line_detection.log"
+    },
+    "notifications": {
+      "enable_notifications": true,
+      "notification_level": "INFO",
+      "show_detection_success": true,
+      "show_detection_failure": true,
+      "show_confidence_warnings": true,
+      "show_performance_warnings": true,
+      "notification_duration_ms": 3000,
+      "auto_dismiss_notifications": true
+    },
+    "validation": {
+      "enable_config_validation": true,
+      "strict_parameter_validation": false,
+      "validate_ranges": true,
+      "validate_dependencies": true,
+      "validation_error_action": "log_warning",
+      "auto_fix_invalid_values": false,
+      "validation_report_enabled": false,
+      "validation_report_path": "./logs/validation_report.json"
+    }
+  },
+  "timestamp": "2025-12-08 12:30:00"
 }

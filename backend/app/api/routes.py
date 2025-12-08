@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 import logging
+import base64
+import io
+import time
+from PIL import Image
+import numpy as np
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     FastAPI,
     File,
@@ -26,12 +32,18 @@ from ..models import (
     AnalyzeResponse,
     AnalyzeSeriesPoint,
     ControlCommandResponse,
+    ControlCommandStatus,
     ControlStatusResponse,
     DualRealtimeDataResponse,
     DualRoiDataResponse,
+    EnhancedRealtimeDataResponse,
     ErrorDetails,
     ErrorResponse,
     HealthResponse,
+    LineDetectionConfig,
+    LineIntersectionResult,
+    ManualLineDetectionRequest,
+    ManualLineDetectionResponse,
     PeakDetectionConfigResponse,
     PeakSignalResponse,
     RealtimeDataResponse,
@@ -52,6 +64,7 @@ from ..models import (
 from ..core.data_store import data_store
 from ..core.processor import processor
 from ..core.roi_capture import roi_capture_service
+from ..core.line_intersection_detector import LineIntersectionDetector
 from ..utils import create_roi_data_with_image, generate_waveform_image_with_peaks
 from ..peak_detection import detect_peaks
 
@@ -481,6 +494,150 @@ def _create_roi2_config(roi1_config: RoiConfig) -> RoiConfig:
     roi2_y2 = min(roi1_config.y2, roi2_y1 + roi2_size)
 
     return RoiConfig(x1=roi2_x1, y1=roi2_y1, x2=roi2_x2, y2=roi2_y2)
+
+
+@router.get("/data/realtime/enhanced", response_model=EnhancedRealtimeDataResponse)
+async def enhanced_realtime_data(
+    count: int = Query(100, ge=1, le=1000, description="Number of data points"),
+    include_line_intersection: bool = Query(False, description="Include ROI1 line intersection detection results")
+) -> EnhancedRealtimeDataResponse:
+    """
+    获取增强的双ROI实时数据，支持可选的ROI1线条相交检测
+
+    Args:
+        count: 获取的数据点数量
+        include_line_intersection: 是否包含ROI1绿色线条相交检测结果
+
+    Returns:
+        EnhancedRealtimeDataResponse: 增强的双ROI实时数据响应
+    """
+    logger.debug("📈 Enhanced dual ROI realtime data requested: count=%d, include_line_intersection=%s",
+                count, include_line_intersection)
+
+    # 首先获取基础的双ROI实时数据
+    dual_response = await dual_realtime_data(count)
+
+    # 转换为增强响应格式
+    enhanced_response = EnhancedRealtimeDataResponse(
+        type="enhanced_realtime_data",
+        timestamp=dual_response.timestamp,
+        frame_count=dual_response.frame_count,
+        series=dual_response.series,
+        dual_roi_data=dual_response.dual_roi_data,
+        peak_signal=dual_response.peak_signal,
+        enhanced_peak=dual_response.enhanced_peak,
+        baseline=dual_response.baseline,
+        line_intersection=None  # 初始化为None，根据参数条件填充
+    )
+
+    # 如果请求包含线条相交检测，则执行检测
+    if include_line_intersection:
+        logger.debug("🔍 Including line intersection detection for ROI1")
+        line_detection_start = time.time()
+
+        try:
+            # 检查线条检测是否启用
+            if not settings.line_detection.enabled:
+                logger.debug("🛑 Line intersection detection requested but not enabled in configuration")
+                enhanced_response.line_intersection = LineIntersectionResult(
+                    has_intersection=False,
+                    confidence=0.0,
+                    processing_time_ms=0.0,
+                    error_message="Line intersection detection is disabled in configuration",
+                    edge_quality=0.0,
+                    temporal_stability=0.0,
+                    frame_count=enhanced_response.frame_count,
+                    detected_lines=[]
+                )
+            else:
+                # 检查ROI是否已配置
+                roi_configured, roi_config = data_store.get_roi_status()
+                if not roi_configured:
+                    logger.debug("🛑 Line intersection detection requested but ROI not configured")
+                    enhanced_response.line_intersection = LineIntersectionResult(
+                        has_intersection=False,
+                        confidence=0.0,
+                        processing_time_ms=0.0,
+                        error_message="ROI not configured for line intersection detection",
+                        edge_quality=0.0,
+                        temporal_stability=0.0,
+                        frame_count=enhanced_response.frame_count,
+                        detected_lines=[]
+                    )
+                else:
+                    # 使用ROI1数据进行线条相交检测
+                    roi1_data = enhanced_response.dual_roi_data.roi1_data
+
+                    if roi1_data.format == "base64" and roi1_data.pixels:
+                        # 解码ROI1图像
+                        try:
+                            image_bytes = base64.b64decode(roi1_data.pixels)
+                            pil_image = Image.open(io.BytesIO(image_bytes))
+                            roi1_image = np.array(pil_image.convert('RGB'))
+                            logger.debug("✅ ROI1 image decoded successfully for line detection: shape=%s", roi1_image.shape)
+
+                            # 创建线条相交检测器并执行检测
+                            detector = LineIntersectionDetector(settings.line_detection)
+                            line_result = detector.detect_intersection(roi1_image, enhanced_response.frame_count)
+
+                            enhanced_response.line_intersection = line_result
+                            logger.debug("✅ Line intersection detection completed: has_intersection=%s, confidence=%.3f, time=%.2fms",
+                                       line_result.has_intersection, line_result.confidence, line_result.processing_time_ms)
+
+                        except Exception as e:
+                            logger.error("❌ Failed to decode ROI1 image for line detection: %s", str(e))
+                            enhanced_response.line_intersection = LineIntersectionResult(
+                                has_intersection=False,
+                                confidence=0.0,
+                                processing_time_ms=0.0,
+                                error_message=f"Failed to decode ROI1 image: {str(e)}",
+                                edge_quality=0.0,
+                                temporal_stability=0.0,
+                                frame_count=enhanced_response.frame_count,
+                                detected_lines=[]
+                            )
+                    else:
+                        logger.debug("🛑 ROI1 data not available for line intersection detection")
+                        enhanced_response.line_intersection = LineIntersectionResult(
+                            has_intersection=False,
+                            confidence=0.0,
+                            processing_time_ms=0.0,
+                            error_message="ROI1 image data not available or invalid format",
+                            edge_quality=0.0,
+                            temporal_stability=0.0,
+                            frame_count=enhanced_response.frame_count,
+                            detected_lines=[]
+                        )
+
+        except Exception as e:
+            logger.error("❌ Line intersection detection failed: %s", str(e))
+            enhanced_response.line_intersection = LineIntersectionResult(
+                has_intersection=False,
+                confidence=0.0,
+                processing_time_ms=0.0,
+                error_message=f"Line intersection detection failed: {str(e)}",
+                edge_quality=0.0,
+                temporal_stability=0.0,
+                frame_count=enhanced_response.frame_count,
+                detected_lines=[]
+            )
+
+        # 记录处理时间
+        total_line_detection_time = (time.time() - line_detection_start) * 1000
+        logger.debug("📊 Line intersection processing completed in %.2fms", total_line_detection_time)
+
+    logger.debug(
+        "📊 Enhanced dual ROI realtime data response: frame_count=%d points=%d roi1_gray=%.3f roi2_gray=%.3f peak_signal=%s baseline=%.3f line_intersection=%s",
+        enhanced_response.frame_count,
+        len(enhanced_response.series),
+        enhanced_response.dual_roi_data.roi1_data.gray_value,
+        enhanced_response.dual_roi_data.roi2_data.gray_value,
+        str(enhanced_response.peak_signal),
+        enhanced_response.baseline,
+        "included" if enhanced_response.line_intersection else "not_requested"
+    )
+
+    return enhanced_response
 
 
 def verify_password(password: str) -> None:
@@ -1817,6 +1974,872 @@ async def import_config(
     except Exception as e:
         logger.error(f"导入配置失败: {e}")
         raise HTTPException(status_code=500, detail=f"导入配置失败: {str(e)}")
+
+
+# ============================================================================
+# ROI1 绿色线条相交检测控制API端点
+# ============================================================================
+
+@router.get("/api/roi/line-intersection/config", summary="获取线条检测配置")
+async def get_line_detection_config(
+    password: str = Query(..., description="管理密码")
+):
+    """
+    获取ROI1绿色线条相交检测的当前配置
+
+    Args:
+        password: 管理密码
+
+    Returns:
+        线条检测配置信息
+    """
+    verify_password(password)
+
+    logger.debug("📋 Getting ROI1 line intersection detection configuration")
+    now = datetime.utcnow()
+
+    try:
+        # 优先从配置文件获取最新配置
+        from ..core.config_manager import get_config_manager
+        config_manager = get_config_manager()
+
+        line_detection_config = config_manager.get_config(section="line_detection")
+
+        if not line_detection_config:
+            # 如果配置文件中没有，使用运行时默认配置
+            line_detection_config = {
+                "enabled": settings.line_detection.enabled,
+                "hsv_green_lower": list(settings.line_detection.hsv_green_lower),
+                "hsv_green_upper": list(settings.line_detection.hsv_green_upper),
+                "canny_low_threshold": settings.line_detection.canny_low_threshold,
+                "canny_high_threshold": settings.line_detection.canny_high_threshold,
+                "hough_threshold": settings.line_detection.hough_threshold,
+                "hough_min_line_length": settings.line_detection.hough_min_line_length,
+                "hough_max_line_gap": settings.line_detection.hough_max_line_gap,
+                "min_confidence": settings.line_detection.min_confidence,
+                "roi_processing_mode": settings.line_detection.roi_processing_mode,
+                "cache_timeout_ms": settings.line_detection.cache_timeout_ms,
+                "max_processing_time_ms": settings.line_detection.max_processing_time_ms,
+                "min_angle_degrees": getattr(settings.line_detection, 'min_angle_degrees', 10.0),
+                "max_angle_degrees": getattr(settings.line_detection, 'max_angle_degrees', 80.0),
+                "parallel_threshold": getattr(settings.line_detection, 'parallel_threshold', 0.01)
+            }
+
+        logger.debug("📋 Line detection config retrieved successfully: enabled=%s", line_detection_config.get("enabled", False))
+
+        return {
+            "timestamp": now.isoformat(),
+            "success": True,
+            "data": line_detection_config,
+            "message": "Line detection configuration retrieved successfully"
+        }
+
+    except Exception as e:
+        logger.error("❌ Failed to get line detection configuration: %s", str(e))
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="GET_LINE_DETECTION_CONFIG_ERROR",
+            error_message="Internal error while retrieving line detection configuration",
+            details=ErrorDetails(
+                parameter="internal_error",
+                value=str(e),
+                constraint="System error occurred"
+            )
+        )
+        return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+
+@router.post("/api/roi/line-intersection/config", summary="更新线条检测配置")
+async def update_line_detection_config(
+    password: str = Form(..., description="管理密码"),
+    enabled: Optional[bool] = Form(None, description="是否启用线条检测"),
+    hsv_green_lower_0: Optional[int] = Form(None, ge=0, le=179, description="HSV绿色下限H值"),
+    hsv_green_lower_1: Optional[int] = Form(None, ge=0, le=255, description="HSV绿色下限S值"),
+    hsv_green_lower_2: Optional[int] = Form(None, ge=0, le=255, description="HSV绿色下限V值"),
+    hsv_green_upper_0: Optional[int] = Form(None, ge=0, le=179, description="HSV绿色上限H值"),
+    hsv_green_upper_1: Optional[int] = Form(None, ge=0, le=255, description="HSV绿色上限S值"),
+    hsv_green_upper_2: Optional[int] = Form(None, ge=0, le=255, description="HSV绿色上限V值"),
+    canny_low_threshold: Optional[int] = Form(None, ge=0, le=255, description="Canny边缘检测低阈值"),
+    canny_high_threshold: Optional[int] = Form(None, ge=0, le=255, description="Canny边缘检测高阈值"),
+    hough_threshold: Optional[int] = Form(None, ge=1, description="Hough直线变换投票阈值"),
+    hough_min_line_length: Optional[int] = Form(None, ge=1, description="检测直线最小长度"),
+    hough_max_line_gap: Optional[int] = Form(None, ge=0, description="检测直线最大间隙"),
+    min_confidence: Optional[float] = Form(None, ge=0.0, le=1.0, description="最小置信度阈值"),
+    roi_processing_mode: Optional[str] = Form(None, description="ROI处理模式"),
+    cache_timeout_ms: Optional[int] = Form(None, ge=0, description="结果缓存超时时间(毫秒)"),
+    max_processing_time_ms: Optional[int] = Form(None, ge=50, description="最大处理时间限制(毫秒)"),
+    min_angle_degrees: Optional[float] = Form(None, ge=0.0, le=90.0, description="过滤水平线的最小角度"),
+    max_angle_degrees: Optional[float] = Form(None, ge=0.0, le=90.0, description="过滤垂直线的最大角度"),
+    parallel_threshold: Optional[float] = Form(None, ge=0.0001, le=1.0, description="平行线检测阈值")
+):
+    """
+    更新ROI1绿色线条相交检测配置参数并保存到JSON文件
+
+    Args:
+        password: 管理密码
+        其他参数: 线条检测配置参数（可选，只更新提供的参数）
+
+    Returns:
+        配置更新结果
+    """
+    verify_password(password)
+
+    logger.info("🔧 Line detection configuration update requested")
+    now = datetime.utcnow()
+
+    # 验证配置参数并构建更新字典
+    updates = {}
+    validation_errors = []
+
+    if enabled is not None:
+        updates["enabled"] = enabled
+
+    # HSV绿色下限阈值
+    hsv_lower = None
+    if all(x is not None for x in [hsv_green_lower_0, hsv_green_lower_1, hsv_green_lower_2]):
+        if not (0 <= hsv_green_lower_0 <= 179):
+            validation_errors.append("hsv_green_lower_0 must be between 0 and 179")
+        if not (0 <= hsv_green_lower_1 <= 255):
+            validation_errors.append("hsv_green_lower_1 must be between 0 and 255")
+        if not (0 <= hsv_green_lower_2 <= 255):
+            validation_errors.append("hsv_green_lower_2 must be between 0 and 255")
+        if not validation_errors:
+            hsv_lower = [hsv_green_lower_0, hsv_green_lower_1, hsv_green_lower_2]
+            updates["hsv_green_lower"] = hsv_lower
+    elif any(x is not None for x in [hsv_green_lower_0, hsv_green_lower_1, hsv_green_lower_2]):
+        validation_errors.append("All hsv_green_lower values (0,1,2) must be provided together")
+
+    # HSV绿色上限阈值
+    hsv_upper = None
+    if all(x is not None for x in [hsv_green_upper_0, hsv_green_upper_1, hsv_green_upper_2]):
+        if not (0 <= hsv_green_upper_0 <= 179):
+            validation_errors.append("hsv_green_upper_0 must be between 0 and 179")
+        if not (0 <= hsv_green_upper_1 <= 255):
+            validation_errors.append("hsv_green_upper_1 must be between 0 and 255")
+        if not (0 <= hsv_green_upper_2 <= 255):
+            validation_errors.append("hsv_green_upper_2 must be between 0 and 255")
+        if not validation_errors:
+            hsv_upper = [hsv_green_upper_0, hsv_green_upper_1, hsv_green_upper_2]
+            updates["hsv_green_upper"] = hsv_upper
+    elif any(x is not None for x in [hsv_green_upper_0, hsv_green_upper_1, hsv_green_upper_2]):
+        validation_errors.append("All hsv_green_upper values (0,1,2) must be provided together")
+
+    # 验证HSV范围关系
+    if hsv_lower and hsv_upper:
+        if hsv_lower[0] >= hsv_upper[0]:
+            validation_errors.append("hsv_green_lower[0] (H) must be less than hsv_green_upper[0]")
+        if hsv_lower[1] >= hsv_upper[1]:
+            validation_errors.append("hsv_green_lower[1] (S) must be less than hsv_green_upper[1]")
+        if hsv_lower[2] >= hsv_upper[2]:
+            validation_errors.append("hsv_green_lower[2] (V) must be less than hsv_green_upper[2]")
+
+    # Canny阈值验证
+    if canny_low_threshold is not None:
+        updates["canny_low_threshold"] = canny_low_threshold
+    if canny_high_threshold is not None:
+        updates["canny_high_threshold"] = canny_high_threshold
+
+    # 验证Canny阈值关系
+    if ("canny_low_threshold" in updates and "canny_high_threshold" in updates and
+        updates["canny_low_threshold"] >= updates["canny_high_threshold"]):
+        validation_errors.append("canny_low_threshold must be less than canny_high_threshold")
+
+    if hough_threshold is not None:
+        if hough_threshold < 1:
+            validation_errors.append("hough_threshold must be at least 1")
+        else:
+            updates["hough_threshold"] = hough_threshold
+
+    if hough_min_line_length is not None:
+        if hough_min_line_length < 1:
+            validation_errors.append("hough_min_line_length must be at least 1")
+        else:
+            updates["hough_min_line_length"] = hough_min_line_length
+
+    if hough_max_line_gap is not None:
+        if hough_max_line_gap < 0:
+            validation_errors.append("hough_max_line_gap must be non-negative")
+        else:
+            updates["hough_max_line_gap"] = hough_max_line_gap
+
+    # 验证Hough参数关系
+    if ("hough_min_line_length" in updates and "hough_max_line_gap" in updates and
+        updates["hough_min_line_length"] <= updates["hough_max_line_gap"]):
+        validation_errors.append("hough_min_line_length must be greater than hough_max_line_gap")
+
+    if min_confidence is not None:
+        updates["min_confidence"] = min_confidence
+
+    if roi_processing_mode is not None:
+        if roi_processing_mode not in ["roi1_only"]:
+            validation_errors.append("roi_processing_mode must be 'roi1_only'")
+        else:
+            updates["roi_processing_mode"] = roi_processing_mode
+
+    if cache_timeout_ms is not None:
+        updates["cache_timeout_ms"] = cache_timeout_ms
+
+    if max_processing_time_ms is not None:
+        if max_processing_time_ms < 50:
+            validation_errors.append("max_processing_time_ms must be at least 50")
+        else:
+            updates["max_processing_time_ms"] = max_processing_time_ms
+
+    if min_angle_degrees is not None:
+        updates["min_angle_degrees"] = min_angle_degrees
+
+    if max_angle_degrees is not None:
+        updates["max_angle_degrees"] = max_angle_degrees
+
+    # 验证角度关系
+    if ("min_angle_degrees" in updates and "max_angle_degrees" in updates and
+        updates["min_angle_degrees"] >= updates["max_angle_degrees"]):
+        validation_errors.append("min_angle_degrees must be less than max_angle_degrees")
+
+    if parallel_threshold is not None:
+        updates["parallel_threshold"] = parallel_threshold
+
+    # 如果有验证错误，返回错误响应
+    if validation_errors:
+        error_message = "; ".join(validation_errors)
+        logger.warning("❌ Line detection config validation failed: %s", error_message)
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="INVALID_LINE_DETECTION_CONFIG",
+            error_message="Line detection configuration validation failed",
+            details=ErrorDetails(
+                parameter="validation_errors",
+                value=validation_errors,
+                constraint="Configuration parameters must be within valid ranges"
+            )
+        )
+        return JSONResponse(status_code=400, content=error.model_dump(mode='json'))
+
+    # 如果有更新，保存到JSON配置文件
+    if updates:
+        try:
+            from ..core.config_manager import get_config_manager
+            config_manager = get_config_manager()
+
+            success = config_manager.update_config(updates, section="line_detection")
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to update line detection configuration")
+
+            # 保存到文件
+            if not config_manager.save_config():
+                raise HTTPException(status_code=500, detail="Failed to save line detection configuration")
+
+            logger.info("✅ Line detection config saved to JSON file: %s", ", ".join(f"{k}={v}" for k, v in updates.items()))
+
+            # 更新运行时settings对象以保持兼容性
+            for key, value in updates.items():
+                if hasattr(settings.line_detection, key):
+                    setattr(settings.line_detection, key, value)
+
+            logger.info("✅ Runtime line detection configuration updated")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("❌ Failed to save line detection config to JSON: %s", str(e))
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="SAVE_LINE_DETECTION_CONFIG_FAILED",
+                error_message="Failed to save line detection configuration",
+                details=ErrorDetails(
+                    parameter="config_save",
+                    value=str(e),
+                    constraint="File write operation failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+    fields_str = ", ".join(f"{k}={v}" for k, v in updates.items()) if updates else "no changes"
+    logger.info("✅ Line detection configuration updated: %s", fields_str)
+
+    return {
+        "timestamp": now.isoformat(),
+        "success": True,
+        "data": updates,
+        "message": f"Line detection configuration updated: {fields_str}"
+    }
+
+
+@router.post("/api/roi/line-intersection/config/reset", summary="重置线条检测配置")
+async def reset_line_detection_config(
+    password: str = Form(..., description="管理密码")
+):
+    """
+    重置ROI1绿色线条相交检测配置为默认值
+
+    Args:
+        password: 管理密码
+
+    Returns:
+        配置重置结果
+    """
+    verify_password(password)
+
+    logger.info("🔄 Resetting ROI1 line intersection detection configuration to defaults")
+    now = datetime.utcnow()
+
+    # 默认配置
+    default_config = {
+        "enabled": False,
+        "hsv_green_lower": [40, 50, 50],
+        "hsv_green_upper": [80, 255, 255],
+        "canny_low_threshold": 25,
+        "canny_high_threshold": 80,
+        "hough_threshold": 50,
+        "hough_min_line_length": 15,
+        "hough_max_line_gap": 8,
+        "min_confidence": 0.4,
+        "roi_processing_mode": "roi1_only",
+        "cache_timeout_ms": 100,
+        "max_processing_time_ms": 300,
+        "min_angle_degrees": 10.0,
+        "max_angle_degrees": 80.0,
+        "parallel_threshold": 0.01
+    }
+
+    try:
+        from ..core.config_manager import get_config_manager
+        config_manager = get_config_manager()
+
+        # 重置配置
+        success = config_manager.update_config(default_config, section="line_detection")
+        if not success:
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="RESET_LINE_DETECTION_CONFIG_FAILED",
+                error_message="Failed to reset line detection configuration",
+                details=ErrorDetails(
+                    parameter="config_reset",
+                    value="failed",
+                    constraint="Configuration update failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 保存到文件
+        if not config_manager.save_config():
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="SAVE_RESET_LINE_DETECTION_CONFIG_FAILED",
+                error_message="Failed to save reset line detection configuration",
+                details=ErrorDetails(
+                    parameter="config_save",
+                    value="failed",
+                    constraint="File write operation failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 更新运行时settings对象
+        for key, value in default_config.items():
+            if hasattr(settings.line_detection, key):
+                setattr(settings.line_detection, key, value)
+
+        logger.info("✅ Line detection configuration reset to defaults successfully")
+
+        return {
+            "timestamp": now.isoformat(),
+            "success": True,
+            "data": default_config,
+            "message": "Line detection configuration reset to defaults successfully"
+        }
+
+    except Exception as e:
+        logger.error("❌ Failed to reset line detection configuration: %s", str(e))
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="RESET_LINE_DETECTION_CONFIG_ERROR",
+            error_message="Internal error while resetting line detection configuration",
+            details=ErrorDetails(
+                parameter="internal_error",
+                value=str(e),
+                constraint="System error occurred"
+            )
+        )
+        return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+
+@router.post("/api/roi/line-intersection/enable", summary="启用线条相交检测")
+async def enable_line_detection(
+    password: str = Form(..., description="管理密码")
+):
+    """
+    启用ROI1绿色线条相交检测功能
+
+    Args:
+        password: 管理密码
+
+    Returns:
+        启用操作结果
+    """
+    verify_password(password)
+
+    logger.info("🔧 Enabling ROI1 line intersection detection")
+    now = datetime.utcnow()
+
+    try:
+        from ..core.config_manager import get_config_manager
+        config_manager = get_config_manager()
+
+        # 更新配置中的启用状态
+        updates = {"enabled": True}
+        success = config_manager.update_config(updates, section="line_detection")
+
+        if not success:
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="ENABLE_LINE_DETECTION_FAILED",
+                error_message="Failed to enable line detection in configuration",
+                details=ErrorDetails(
+                    parameter="enabled",
+                    value=True,
+                    constraint="Configuration update failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 保存配置到文件
+        if not config_manager.save_config():
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="SAVE_LINE_DETECTION_CONFIG_FAILED",
+                error_message="Failed to save line detection configuration",
+                details=ErrorDetails(
+                    parameter="config_save",
+                    value="failed",
+                    constraint="File write operation failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 更新运行时配置
+        settings.line_detection.enabled = True
+
+        logger.info("✅ ROI1 line intersection detection enabled successfully")
+
+        return ControlCommandResponse(
+            timestamp=now,
+            command="enable_line_detection",
+            status=ControlCommandStatus.SUCCESS,
+            message="ROI1 green line intersection detection enabled successfully"
+        )
+
+    except Exception as e:
+        logger.error("❌ Failed to enable line detection: %s", str(e))
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="ENABLE_LINE_DETECTION_ERROR",
+            error_message="Internal error while enabling line detection",
+            details=ErrorDetails(
+                parameter="internal_error",
+                value=str(e),
+                constraint="System error occurred"
+            )
+        )
+        return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+
+@router.post("/api/roi/line-intersection/disable", summary="禁用线条相交检测")
+async def disable_line_detection(
+    password: str = Form(..., description="管理密码")
+):
+    """
+    禁用ROI1绿色线条相交检测功能
+
+    Args:
+        password: 管理密码
+
+    Returns:
+        禁用操作结果
+    """
+    verify_password(password)
+
+    logger.info("🔧 Disabling ROI1 line intersection detection")
+    now = datetime.utcnow()
+
+    try:
+        from ..core.config_manager import get_config_manager
+        config_manager = get_config_manager()
+
+        # 更新配置中的启用状态
+        updates = {"enabled": False}
+        success = config_manager.update_config(updates, section="line_detection")
+
+        if not success:
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="DISABLE_LINE_DETECTION_FAILED",
+                error_message="Failed to disable line detection in configuration",
+                details=ErrorDetails(
+                    parameter="enabled",
+                    value=False,
+                    constraint="Configuration update failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 保存配置到文件
+        if not config_manager.save_config():
+            error = ErrorResponse(
+                timestamp=now,
+                error_code="SAVE_LINE_DETECTION_CONFIG_FAILED",
+                error_message="Failed to save line detection configuration",
+                details=ErrorDetails(
+                    parameter="config_save",
+                    value="failed",
+                    constraint="File write operation failed"
+                )
+            )
+            return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+        # 更新运行时配置
+        settings.line_detection.enabled = False
+
+        logger.info("✅ ROI1 line intersection detection disabled successfully")
+
+        return ControlCommandResponse(
+            timestamp=now,
+            command="disable_line_detection",
+            status=ControlCommandStatus.SUCCESS,
+            message="ROI1 green line intersection detection disabled successfully"
+        )
+
+    except Exception as e:
+        logger.error("❌ Failed to disable line detection: %s", str(e))
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="DISABLE_LINE_DETECTION_ERROR",
+            error_message="Internal error while disabling line detection",
+            details=ErrorDetails(
+                parameter="internal_error",
+                value=str(e),
+                constraint="System error occurred"
+            )
+        )
+        return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+
+@router.get("/api/roi/line-intersection/status", summary="获取线条检测状态")
+async def get_line_detection_status():
+    """
+    获取ROI1绿色线条相交检测的当前状态
+
+    Returns:
+        线条检测状态信息
+    """
+    logger.debug("📊 Getting ROI1 line intersection detection status")
+    now = datetime.utcnow()
+
+    try:
+        # 从运行时配置获取当前状态
+        is_enabled = settings.line_detection.enabled
+
+        # 获取详细配置信息
+        config_info = {
+            "enabled": is_enabled,
+            "hsv_green_lower": settings.line_detection.hsv_green_lower,
+            "hsv_green_upper": settings.line_detection.hsv_green_upper,
+            "canny_low_threshold": settings.line_detection.canny_low_threshold,
+            "canny_high_threshold": settings.line_detection.canny_high_threshold,
+            "hough_threshold": settings.line_detection.hough_threshold,
+            "hough_min_line_length": settings.line_detection.hough_min_line_length,
+            "hough_max_line_gap": settings.line_detection.hough_max_line_gap,
+            "min_confidence": settings.line_detection.min_confidence,
+            "roi_processing_mode": settings.line_detection.roi_processing_mode,
+            "cache_timeout_ms": settings.line_detection.cache_timeout_ms,
+            "max_processing_time_ms": settings.line_detection.max_processing_time_ms,
+            "min_angle_degrees": settings.line_detection.min_angle_degrees,
+            "max_angle_degrees": settings.line_detection.max_angle_degrees,
+            "parallel_threshold": settings.line_detection.parallel_threshold
+        }
+
+        logger.debug("📊 Line detection status: enabled=%s", is_enabled)
+
+        return {
+            "timestamp": now.isoformat(),
+            "success": True,
+            "data": {
+                "enabled": is_enabled,
+                "status": "enabled" if is_enabled else "disabled",
+                "config": config_info
+            },
+            "message": f"Line detection is {'enabled' if is_enabled else 'disabled'}"
+        }
+
+    except Exception as e:
+        logger.error("❌ Failed to get line detection status: %s", str(e))
+        error = ErrorResponse(
+            timestamp=now,
+            error_code="GET_LINE_DETECTION_STATUS_ERROR",
+            error_message="Internal error while retrieving line detection status",
+            details=ErrorDetails(
+                parameter="internal_error",
+                value=str(e),
+                constraint="System error occurred"
+            )
+        )
+        return JSONResponse(status_code=500, content=error.model_dump(mode='json'))
+
+
+@router.post("/api/roi/line-intersection", summary="手动线条相交检测", response_model=ManualLineDetectionResponse)
+async def manual_line_intersection_detection(
+    request: ManualLineDetectionRequest
+) -> ManualLineDetectionResponse:
+    """
+    手动执行ROI1绿色线条相交检测
+
+    支持两种输入模式：
+    1. ROI坐标模式：提供ROI坐标，系统自动截图并检测
+    2. 图像数据模式：直接提供base64编码的图像数据进行检测
+
+    Args:
+        request: ManualLineDetectionRequest，包含检测请求参数
+
+    Returns:
+        ManualLineDetectionResponse：检测结果和相关信息
+    """
+    logger.info("🔍 Manual line intersection detection requested")
+    start_time = time.time()
+    now = datetime.utcnow()
+
+    # 验证密码
+    try:
+        verify_password(request.password)
+    except HTTPException as e:
+        logger.warning("❌ Manual line detection password verification failed")
+        return ManualLineDetectionResponse(
+            success=False,
+            timestamp=now,
+            message="密码验证失败",
+            error_details=ErrorDetails(
+                parameter="password",
+                value="invalid",
+                constraint="Valid password required"
+            )
+        )
+
+    # 验证输入模式（必须提供ROI坐标或图像数据，但不能同时提供）
+    has_roi = request.roi_coordinates is not None
+    has_image = request.image_data is not None and len(request.image_data.strip()) > 0
+
+    if not has_roi and not has_image:
+        logger.warning("❌ Manual line detection missing input data")
+        return ManualLineDetectionResponse(
+            success=False,
+            timestamp=now,
+            message="必须提供ROI坐标或图像数据",
+            error_details=ErrorDetails(
+                parameter="input_data",
+                value="missing",
+                constraint="Either roi_coordinates or image_data must be provided"
+            )
+        )
+
+    if has_roi and has_image:
+        logger.warning("❌ Manual line detection conflicting input data")
+        return ManualLineDetectionResponse(
+            success=False,
+            timestamp=now,
+            message="ROI坐标和图像数据不能同时提供",
+            error_details=ErrorDetails(
+                parameter="input_data",
+                value="conflicting",
+                constraint="Provide either roi_coordinates or image_data, not both"
+            )
+        )
+
+    # 初始化处理信息
+    processing_info = {
+        "input_mode": "roi_coordinates" if has_roi else "image_data",
+        "start_time": start_time,
+        "force_refresh": request.force_refresh,
+        "include_debug_info": request.include_debug_info
+    }
+
+    try:
+        # 获取或创建检测器实例
+        detector_config = request.detection_params or settings.line_detection
+
+        # 创建检测器实例
+        detector = LineIntersectionDetector(detector_config)
+        logger.debug("✅ LineIntersectionDetector created successfully")
+
+        roi_image = None
+        roi_config_used = None
+
+        if has_roi:
+            # ROI坐标模式：截图ROI区域
+            roi_config = request.roi_coordinates
+            roi_config_used = roi_config
+
+            # 验证ROI坐标
+            if not roi_config.validate_coordinates():
+                logger.warning("❌ Invalid ROI coordinates provided")
+                return ManualLineDetectionResponse(
+                    success=False,
+                    timestamp=now,
+                    message="ROI坐标无效",
+                    processing_info=processing_info,
+                    error_details=ErrorDetails(
+                        parameter="roi_coordinates",
+                        value=str(roi_config.model_dump()),
+                        constraint="Valid ROI coordinates required"
+                    )
+                )
+
+            # 执行ROI截图
+            logger.debug("📸 Capturing ROI from coordinates: (%d,%d) -> (%d,%d)",
+                        roi_config.x1, roi_config.y1, roi_config.x2, roi_config.y2)
+
+            roi_data = roi_capture_service.capture_roi(roi_config)
+            if roi_data is None or roi_data.format != "base64":
+                logger.error("❌ ROI capture failed")
+                return ManualLineDetectionResponse(
+                    success=False,
+                    timestamp=now,
+                    message="ROI截图失败",
+                    processing_info=processing_info,
+                    error_details=ErrorDetails(
+                        parameter="roi_capture",
+                        value="failed",
+                        constraint="ROI screenshot capture failed"
+                    )
+                )
+
+            # 解码base64图像数据
+            try:
+                image_bytes = base64.b64decode(roi_data.pixels)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                roi_image = np.array(pil_image.convert('RGB'))
+                logger.debug("✅ ROI image decoded successfully: shape=%s", roi_image.shape)
+            except Exception as e:
+                logger.error("❌ Failed to decode ROI image: %s", str(e))
+                return ManualLineDetectionResponse(
+                    success=False,
+                    timestamp=now,
+                    message="ROI图像解码失败",
+                    processing_info=processing_info,
+                    error_details=ErrorDetails(
+                        parameter="image_decode",
+                        value=str(e),
+                        constraint="Base64 image decoding failed"
+                    )
+                )
+
+        else:
+            # 图像数据模式：解码提供的图像
+            logger.debug("🖼️ Decoding provided image data")
+            try:
+                # 移除可能的数据URL前缀
+                image_data_clean = request.image_data
+                if image_data_clean.startswith('data:image'):
+                    image_data_clean = image_data_clean.split(',')[1]
+
+                image_bytes = base64.b64decode(image_data_clean)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                roi_image = np.array(pil_image.convert('RGB'))
+                logger.debug("✅ Provided image decoded successfully: shape=%s", roi_image.shape)
+            except Exception as e:
+                logger.error("❌ Failed to decode provided image: %s", str(e))
+                return ManualLineDetectionResponse(
+                    success=False,
+                    timestamp=now,
+                    message="提供的图像数据解码失败",
+                    processing_info=processing_info,
+                    error_details=ErrorDetails(
+                        parameter="image_decode",
+                        value=str(e),
+                        constraint="Base64 image decoding failed"
+                    )
+                )
+
+        # 执行线条相交检测
+        logger.debug("🔍 Starting line intersection detection")
+        detection_start = time.time()
+
+        try:
+            # 获取当前帧计数
+            frame_count = data_store.get_frame_count()
+
+            # 执行检测
+            result = detector.detect_intersection(roi_image, frame_count)
+
+            detection_time = (time.time() - detection_start) * 1000  # 转换为毫秒
+            processing_info["detection_time_ms"] = detection_time
+            processing_info["detector_config"] = detector_config.model_dump()
+
+            logger.debug("✅ Line intersection detection completed in %.2fms: has_intersection=%s, confidence=%.3f",
+                        detection_time, result.has_intersection, result.confidence)
+
+        except Exception as e:
+            logger.error("❌ Line intersection detection failed: %s", str(e))
+            return ManualLineDetectionResponse(
+                success=False,
+                timestamp=now,
+                message="线条相交检测执行失败",
+                processing_info=processing_info,
+                error_details=ErrorDetails(
+                    parameter="detection_execution",
+                    value=str(e),
+                    constraint="Line intersection algorithm failed"
+                )
+            )
+
+        # 构建调试信息
+        debug_info = None
+        if request.include_debug_info:
+            debug_info = {
+                "detected_lines": result.detected_lines,
+                "edge_quality": result.edge_quality,
+                "temporal_stability": result.temporal_stability,
+                "processing_time_ms": result.processing_time_ms,
+                "frame_count": result.frame_count,
+                "roi_shape": roi_image.shape if roi_image is not None else None
+            }
+
+        # 计算总处理时间
+        total_time = (time.time() - start_time) * 1000
+        processing_info["total_time_ms"] = total_time
+
+        # 构建成功响应
+        success_message = "手动线条相交检测完成"
+        if result.has_intersection:
+            success_message += f" - 检测到相交点 {result.intersection}，置信度 {result.confidence:.3f}"
+        else:
+            success_message += f" - 未检测到有效相交点，最高置信度 {result.confidence:.3f}"
+
+        logger.info("✅ Manual line intersection detection completed successfully in %.2fms", total_time)
+
+        return ManualLineDetectionResponse(
+            success=True,
+            timestamp=now,
+            message=success_message,
+            result=result,
+            processing_info=processing_info,
+            debug_info=debug_info
+        )
+
+    except Exception as e:
+        logger.error("❌ Manual line intersection detection failed with unexpected error: %s", str(e))
+        total_time = (time.time() - start_time) * 1000
+        processing_info["total_time_ms"] = total_time
+
+        return ManualLineDetectionResponse(
+            success=False,
+            timestamp=now,
+            message="手动线条相交检测失败",
+            processing_info=processing_info,
+            error_details=ErrorDetails(
+                parameter="unexpected_error",
+                value=str(e),
+                constraint="System error occurred during processing"
+            )
+        )
 
 
 app = create_app()

@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 import tkinter as tk
+import os
 from tkinter import messagebox, ttk, scrolledtext, StringVar
 import requests
 from typing import Dict, Any, Optional
@@ -17,12 +18,75 @@ import io
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
-from local_config_loader import LocalConfigLoader
+try:
+    from local_config_loader import LocalConfigLoader
+    LOCAL_CONFIG_LOADER_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: LocalConfigLoader import failed: {e}")
+    LOCAL_CONFIG_LOADER_AVAILABLE = False
+    LocalConfigLoader = None
+
+try:
+    from line_detection_config_manager import LineDetectionConfigManager
+    LINE_DETECTION_CONFIG_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: LineDetectionConfigManager import failed: {e}")
+    LINE_DETECTION_CONFIG_AVAILABLE = False
+    LineDetectionConfigManager = None
+from enum import Enum
 
 from realtime_plotter import RealtimePlotter
+from line_detection_widget import LineDetectionWidget
 
 # 设置logger
 logger = logging.getLogger(__name__)
+
+
+class LineDetectionState(Enum):
+    """绿线交点检测状态枚举"""
+    DISABLED = "disabled"           # 检测未启用
+    ENABLING = "enabling"           # 正在启用（过渡状态）
+    ENABLED = "enabled"             # 检测已启用
+    DISABLING = "disabling"         # 正在禁用（过渡状态）
+    ERROR = "error"                 # 错误状态需要干预
+
+
+class LineDetectionConfig:
+    """绿线交点检测配置管理"""
+
+    def __init__(self):
+        self.enabled = False  # 检测是否启用
+        self.auto_start = False  # 应用启动时自动启用
+        self.auto_recovery = True  # 连接中断后自动恢复
+        self.sync_interval = 5.0  # 状态同步间隔（秒）
+        self.timeout = 10.0  # 操作超时时间（秒）
+        self.retry_count = 3  # 重试次数
+        self.retry_delay = 1.0  # 重试延迟（秒）
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'enabled': self.enabled,
+            'auto_start': self.auto_start,
+            'auto_recovery': self.auto_recovery,
+            'sync_interval': self.sync_interval,
+            'timeout': self.timeout,
+            'retry_count': self.retry_count,
+            'retry_delay': self.retry_delay
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'LineDetectionConfig':
+        """从字典创建配置"""
+        config = cls()
+        config.enabled = data.get('enabled', False)
+        config.auto_start = data.get('auto_start', False)
+        config.auto_recovery = data.get('auto_recovery', True)
+        config.sync_interval = data.get('sync_interval', 5.0)
+        config.timeout = data.get('timeout', 10.0)
+        config.retry_count = data.get('retry_count', 3)
+        config.retry_delay = data.get('retry_delay', 1.0)
+        return config
 
 
 class HTTPRealtimeClient:
@@ -39,6 +103,18 @@ class HTTPRealtimeClient:
         self.polling_running = False
         self.polling_thread: Optional[threading.Thread] = None
 
+        # 绿线交点检测状态管理
+        self.line_detection_state = LineDetectionState.DISABLED
+        self.line_detection_config = LineDetectionConfig()
+        self.line_detection_lock = threading.RLock()  # 线程安全锁
+
+        # 状态管理变量
+        self.line_detection_state_callbacks = []  # 状态变化回调
+        self.last_state_sync_time = 0
+        self.state_recovery_in_progress = False
+        self.state_sync_thread: Optional[threading.Thread] = None
+        self.state_sync_running = False
+
         # 数据更新控制
         self.polling_interval = 0.05  # 50ms (20 FPS)
         self.data_count = 0
@@ -47,17 +123,75 @@ class HTTPRealtimeClient:
         # 双ROI模式
         self.dual_roi_mode = True  # 默认启用双ROI模式
 
+        # 增强数据获取配置
+        self.include_line_intersection = True  # 默认启用绿线交点检测数据获取
+        self.enhanced_data_enabled = True  # 默认启用增强数据获取
+        self.fallback_on_error = True  # 出错时回退到标准数据获取
+
+        # 性能监控
+        self.enhanced_fetch_count = 0
+        self.enhanced_fetch_errors = 0
+        self.last_fetch_time = 0
+        self.avg_fetch_time = 0.05
+
         # 绘图器
         self.plotter: Optional[RealtimePlotter] = None
 
         # ROI更新回调
         self.roi_update_callback: Optional[callable] = None
 
+        # 绿线检测配置管理器
+        if LINE_DETECTION_CONFIG_AVAILABLE and LineDetectionConfigManager:
+            try:
+                self.line_detection_config_manager = LineDetectionConfigManager()
+                self.line_detection_config_loaded = False
+            except Exception as e:
+                logger.warning(f"Failed to initialize LineDetectionConfigManager: {str(e)}")
+                self.line_detection_config_manager = None
+                self.line_detection_config_loaded = False
+        else:
+            self.line_detection_config_manager = None
+            self.line_detection_config_loaded = False
+            logger.warning("LineDetectionConfigManager not available, line detection configuration disabled")
+
+        # 绿线交点数据回调
+        self.line_intersection_callback: Optional[callable] = None
+
         logger.info(f"HTTPRealtimeClient initialized for {base_url}")
+        logger.info(f"Enhanced data fetching: enabled={self.enhanced_data_enabled}, line_intersection={self.include_line_intersection}")
 
     def set_roi_update_callback(self, callback: callable):
         """设置ROI更新回调函数"""
         self.roi_update_callback = callback
+
+    def set_line_intersection_callback(self, callback: callable):
+        """设置绿线交点检测数据回调函数"""
+        self.line_intersection_callback = callback
+
+    def set_enhanced_data_config(self, include_line_intersection: bool = None,
+                                enhanced_data_enabled: bool = None,
+                                fallback_on_error: bool = None):
+        """设置增强数据获取配置"""
+        if include_line_intersection is not None:
+            self.include_line_intersection = include_line_intersection
+        if enhanced_data_enabled is not None:
+            self.enhanced_data_enabled = enhanced_data_enabled
+        if fallback_on_error is not None:
+            self.fallback_on_error = fallback_on_error
+
+        logger.info(f"Enhanced data config updated: enhanced={self.enhanced_data_enabled}, "
+                   f"line_intersection={self.include_line_intersection}, fallback={self.fallback_on_error}")
+
+    def get_enhanced_data_stats(self) -> Dict[str, Any]:
+        """获取增强数据获取性能统计"""
+        return {
+            "enhanced_fetch_count": self.enhanced_fetch_count,
+            "enhanced_fetch_errors": self.enhanced_fetch_errors,
+            "error_rate": self.enhanced_fetch_errors / max(1, self.enhanced_fetch_count),
+            "avg_fetch_time": self.avg_fetch_time,
+            "include_line_intersection": self.include_line_intersection,
+            "enhanced_data_enabled": self.enhanced_data_enabled
+        }
 
     def test_connection(self) -> bool:
         """测试服务器连接"""
@@ -65,12 +199,17 @@ class HTTPRealtimeClient:
             response = self.session.get(f"{self.base_url}/health", timeout=5)
             if response.status_code == 200:
                 logger.info("Server connection successful")
+                # 连接成功后初始化绿线交点检测状态
+                if not hasattr(self, '_line_detection_initialized'):
+                    self.initialize_line_detection_state()
+                    self._line_detection_initialized = True
                 return True
             else:
                 logger.error(f"Server returned status code: {response.status_code}")
                 return False
         except Exception as e:
             logger.error(f"Connection test failed: {e}")
+            self._handle_connection_lost()
             return False
 
     def get_system_status(self) -> Optional[Dict[str, Any]]:
@@ -105,6 +244,94 @@ class HTTPRealtimeClient:
         except Exception as e:
             logger.error(f"Failed to get dual ROI data: {e}")
             return None
+
+    def get_enhanced_realtime_data(self, include_line_intersection: bool = None) -> Optional[Dict[str, Any]]:
+        """获取增强的实时数据（包含绿线交点检测数据）"""
+        fetch_start_time = time.time()
+
+        try:
+            # 使用实例配置作为默认值
+            if include_line_intersection is None:
+                include_line_intersection = self.include_line_intersection
+
+            # 构建请求参数
+            params = {"count": 1}
+            if include_line_intersection:
+                params["include_line_intersection"] = "true"
+
+            # 使用增强端点获取数据
+            response = self.session.get(
+                f"{self.base_url}/data/realtime/enhanced",
+                params=params,
+                timeout=5  # 增加超时时间以适应可能的数据处理时间
+            )
+
+            self.enhanced_fetch_count += 1
+
+            if response.status_code == 200:
+                fetch_time = time.time() - fetch_start_time
+                self._update_fetch_performance(fetch_time)
+
+                logger.debug(f"Enhanced realtime data fetched successfully in {fetch_time:.3f}s")
+                return response.json()
+            else:
+                self.enhanced_fetch_errors += 1
+                logger.warning(f"Enhanced data endpoint returned status {response.status_code}")
+                return None
+        except Exception as e:
+            self.enhanced_fetch_errors += 1
+            logger.error(f"Failed to get enhanced realtime data: {e}")
+            return None
+
+    def get_enhanced_dual_roi_data(self, include_line_intersection: bool = None) -> Optional[Dict[str, Any]]:
+        """获取增强的双ROI实时数据（包含绿线交点检测数据）"""
+        fetch_start_time = time.time()
+
+        try:
+            # 使用实例配置作为默认值
+            if include_line_intersection is None:
+                include_line_intersection = self.include_line_intersection
+
+            # 构建请求参数
+            params = {"count": 1}
+            if include_line_intersection:
+                params["include_line_intersection"] = "true"
+
+            # 使用增强双ROI端点获取数据
+            response = self.session.get(
+                f"{self.base_url}/data/dual-realtime/enhanced",
+                params=params,
+                timeout=5  # 增加超时时间以适应可能的数据处理时间
+            )
+
+            self.enhanced_fetch_count += 1
+
+            if response.status_code == 200:
+                fetch_time = time.time() - fetch_start_time
+                self._update_fetch_performance(fetch_time)
+
+                logger.debug(f"Enhanced dual ROI data fetched successfully in {fetch_time:.3f}s")
+                return response.json()
+            else:
+                self.enhanced_fetch_errors += 1
+                logger.warning(f"Enhanced dual ROI data endpoint returned status {response.status_code}")
+                return None
+        except Exception as e:
+            self.enhanced_fetch_errors += 1
+            logger.error(f"Failed to get enhanced dual ROI data: {e}")
+            return None
+
+    def _update_fetch_performance(self, fetch_time: float):
+        """更新数据获取性能统计"""
+        self.last_fetch_time = fetch_time
+        # 使用指数移动平均计算平均获取时间
+        alpha = 0.1  # 平滑因子
+        self.avg_fetch_time = alpha * fetch_time + (1 - alpha) * self.avg_fetch_time
+
+    def _should_use_enhanced_data(self) -> bool:
+        """判断是否应该使用增强数据获取"""
+        # 只有在检测运行且启用增强数据时才使用增强端点
+        return self.enhanced_data_enabled and self.detection_running
 
     def send_control_command(self, command: str) -> Optional[Dict[str, Any]]:
         """发送控制命令"""
@@ -144,27 +371,90 @@ class HTTPRealtimeClient:
         if self.polling_thread and self.polling_thread.is_alive():
             self.polling_thread.join(timeout=2)
 
+        # 停止连接时清理绿线交点检测状态
+        self._handle_connection_lost()
+
         logger.info("Stopped data polling")
+
+    def cleanup(self):
+        """清理客户端资源"""
+        try:
+            logger.info("🧹 Cleaning up HTTPRealtimeClient resources...")
+
+            # 停止数据轮询
+            self.stop_polling()
+
+            # 清理绿线交点检测状态
+            self.cleanup_line_detection_state()
+
+            logger.info("✅ HTTPRealtimeClient cleanup completed")
+
+        except Exception as e:
+            logger.error(f"❌ Error during HTTPRealtimeClient cleanup: {e}")
 
     def _polling_loop(self):
         """轮询循环"""
+        previous_connection_state = self.connected
+
         while self.polling_running:
             try:
-                # 根据模式获取相应的数据
-                if self.dual_roi_mode:
-                    data = self.get_dual_roi_data()
-                    data_type = "dual_realtime_data"
-                else:
-                    data = self.get_realtime_data()
-                    data_type = "realtime_data"
+                # 检测连接状态变化
+                current_connection_state = self.test_connection()
+                if current_connection_state != previous_connection_state:
+                    if current_connection_state and not previous_connection_state:
+                        # 连接恢复
+                        self._handle_connection_restored()
+                        logger.info("🔄 Connection restored, recovering line detection state")
+                    elif not current_connection_state and previous_connection_state:
+                        # 连接丢失
+                        self._handle_connection_lost()
+                        logger.warning("⚠️ Connection lost, handling line detection state recovery")
 
-                if data and data.get("type") == data_type:
-                    # 更新绘图器
+                    previous_connection_state = current_connection_state
+
+                data = None
+                data_type = None
+                use_enhanced = self._should_use_enhanced_data()
+
+                # 选择数据获取方式
+                if use_enhanced:
+                    # 尝试使用增强数据获取
+                    if self.dual_roi_mode:
+                        data = self.get_enhanced_dual_roi_data()
+                        data_type = "enhanced_dual_realtime_data"
+                    else:
+                        data = self.get_enhanced_realtime_data()
+                        data_type = "enhanced_realtime_data"
+
+                    # 如果增强数据获取失败且启用了回退机制，使用标准数据获取
+                    if data is None and self.fallback_on_error:
+                        logger.debug("Enhanced data fetch failed, falling back to standard endpoint")
+                        if self.dual_roi_mode:
+                            data = self.get_dual_roi_data()
+                            data_type = "dual_realtime_data"
+                        else:
+                            data = self.get_realtime_data()
+                            data_type = "realtime_data"
+                else:
+                    # 使用标准数据获取
+                    if self.dual_roi_mode:
+                        data = self.get_dual_roi_data()
+                        data_type = "dual_realtime_data"
+                    else:
+                        data = self.get_realtime_data()
+                        data_type = "realtime_data"
+
+                if data and data.get("type") in [data_type, data_type.replace("enhanced_", "")]:
+                    # 处理增强数据中的绿线交点检测结果
+                    if "enhanced" in data_type and self.include_line_intersection:
+                        self._process_line_intersection_data(data)
+
+                    # 更新绘图器（确保数据格式兼容）
                     if self.plotter:
                         self.plotter.update_data(data)
 
-                    # 如果是双ROI数据且有ROI回调，调用ROI更新
-                    if self.dual_roi_mode and data_type == "dual_realtime_data" and self.roi_update_callback:
+                    # 处理ROI更新
+                    if self.dual_roi_mode and data_type in ["dual_realtime_data", "enhanced_dual_realtime_data"] and self.roi_update_callback:
                         try:
                             self.roi_update_callback(data)
                         except Exception as e:
@@ -179,6 +469,22 @@ class HTTPRealtimeClient:
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}")
                 time.sleep(1)  # 出错时等待1秒后重试
+
+    def _process_line_intersection_data(self, data: Dict[str, Any]):
+        """处理绿线交点检测数据"""
+        try:
+            # 检查是否有绿线交点检测结果
+            line_intersection_result = data.get("line_intersection_result")
+            if line_intersection_result and self.line_intersection_callback:
+                logger.debug("Processing line intersection data")
+                self.line_intersection_callback(line_intersection_result)
+
+            # 可以在这里添加额外的绿线交点数据处理逻辑
+            if line_intersection_result:
+                logger.debug(f"Line intersection status: {line_intersection_result.get('status', 'unknown')}")
+
+        except Exception as e:
+            logger.error(f"Error processing line intersection data: {e}")
 
     def start_detection(self) -> bool:
         """开始检测"""
@@ -204,14 +510,535 @@ class HTTPRealtimeClient:
 
     def get_status(self) -> Dict[str, Any]:
         """获取客户端状态"""
-        return {
-            "connected": self.connected,
-            "detection_running": self.detection_running,
-            "polling_running": self.polling_running,
-            "data_count": self.data_count,
-            "base_url": self.base_url,
-            "polling_interval": self.polling_interval
+        with self.line_detection_lock:
+            status = {
+                "connected": self.connected,
+                "detection_running": self.detection_running,
+                "polling_running": self.polling_running,
+                "data_count": self.data_count,
+                "base_url": self.base_url,
+                "polling_interval": self.polling_interval,
+                "dual_roi_mode": self.dual_roi_mode,
+                "line_detection": {
+                    "state": self.line_detection_state.value,
+                    "config": self.line_detection_config.to_dict(),
+                    "last_sync_time": self.last_state_sync_time,
+                    "recovery_in_progress": self.state_recovery_in_progress
+                },
+                "enhanced_data": {
+                    "enabled": self.enhanced_data_enabled,
+                    "include_line_intersection": self.include_line_intersection,
+                    "fallback_on_error": self.fallback_on_error,
+                    "stats": self.get_enhanced_data_stats()
+                }
+            }
+        return status
+
+    # ================== 绿线交点检测状态管理方法 ==================
+
+    def initialize_line_detection_state(self) -> bool:
+        """初始化绿线交点检测状态"""
+        try:
+            with self.line_detection_lock:
+                logger.info("Initializing line detection state...")
+
+                # 加载本地状态配置
+                if self._load_line_detection_state():
+                    logger.info("✅ Line detection state loaded from local config")
+                else:
+                    logger.info("📝 Using default line detection state")
+
+                # 如果配置了自动启动，尝试启用检测
+                if self.line_detection_config.auto_start:
+                    logger.info("🚀 Auto-start enabled, attempting to enable line detection...")
+                    # 这里不立即启用，等待连接建立后再处理
+                    pass
+
+                # 启动状态同步线程
+                self._start_state_sync_thread()
+
+                logger.info("✅ Line detection state initialized successfully")
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize line detection state: {e}")
+            self.set_line_detection_state(LineDetectionState.ERROR)
+            return False
+
+    def set_line_detection_state(self, new_state: LineDetectionState,
+                                error_msg: str = None, notify_callbacks: bool = True) -> bool:
+        """设置绿线交点检测状态"""
+        try:
+            with self.line_detection_lock:
+                old_state = self.line_detection_state
+
+                # 检查状态转换是否合法
+                if not self._is_valid_state_transition(old_state, new_state):
+                    logger.warning(f"⚠️ Invalid state transition: {old_state.value} → {new_state.value}")
+                    return False
+
+                # 记录状态变化
+                logger.info(f"🔄 Line detection state transition: {old_state.value} → {new_state.value}")
+                if error_msg:
+                    logger.error(f"❌ State change error: {error_msg}")
+
+                self.line_detection_state = new_state
+
+                # 如果状态变化涉及启用/禁用，更新配置
+                if new_state == LineDetectionState.ENABLED:
+                    self.line_detection_config.enabled = True
+                elif new_state == LineDetectionState.DISABLED:
+                    self.line_detection_config.enabled = False
+
+                # 保存状态到配置
+                self._save_line_detection_state()
+
+                # 通知回调函数
+                if notify_callbacks:
+                    self._notify_state_change_callbacks(old_state, new_state, error_msg)
+
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to set line detection state: {e}")
+            return False
+
+    def get_line_detection_state(self) -> LineDetectionState:
+        """获取当前绿线交点检测状态"""
+        with self.line_detection_lock:
+            return self.line_detection_state
+
+    def sync_line_detection_state(self) -> bool:
+        """与后端同步绿线交点检测状态"""
+        try:
+            with self.line_detection_lock:
+                if not self.connected:
+                    logger.debug("Skipping state sync: not connected to server")
+                    return False
+
+                logger.debug("🔄 Syncing line detection state with backend...")
+
+                # 查询后端状态
+                backend_status = self._get_backend_line_detection_status()
+
+                if backend_status is None:
+                    logger.warning("⚠️ Failed to get backend status")
+                    return False
+
+                backend_enabled = backend_status.get('enabled', False)
+                backend_state = LineDetectionState.ENABLED if backend_enabled else LineDetectionState.DISABLED
+
+                # 根据后端状态更新本地状态
+                current_state = self.line_detection_state
+                if current_state not in [LineDetectionState.ENABLING, LineDetectionState.DISABLING]:
+                    if backend_state != current_state:
+                        logger.info(f"🔄 Syncing state with backend: {current_state.value} → {backend_state.value}")
+                        self.set_line_detection_state(backend_state, notify_callbacks=False)
+
+                self.last_state_sync_time = time.time()
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to sync line detection state: {e}")
+            return False
+
+    def enable_line_detection(self) -> bool:
+        """启用绿线交点检测"""
+        try:
+            with self.line_detection_lock:
+                if self.line_detection_state == LineDetectionState.ENABLED:
+                    logger.info("Line detection is already enabled")
+                    return True
+
+                if self.line_detection_state in [LineDetectionState.ENABLING]:
+                    logger.info("Line detection is already being enabled")
+                    return True
+
+                logger.info("🚀 Enabling line detection...")
+                self.set_line_detection_state(LineDetectionState.ENABLING)
+
+                # 发送启用请求到后端
+                success = self._send_line_detection_enable_request()
+
+                if success:
+                    self.set_line_detection_state(LineDetectionState.ENABLED)
+                    logger.info("✅ Line detection enabled successfully")
+                    return True
+                else:
+                    self.set_line_detection_state(LineDetectionState.ERROR, "Failed to enable detection")
+                    logger.error("❌ Failed to enable line detection")
+                    return False
+
+        except Exception as e:
+            error_msg = f"Exception while enabling line detection: {str(e)}"
+            self.set_line_detection_state(LineDetectionState.ERROR, error_msg)
+            logger.error(f"❌ {error_msg}")
+            return False
+
+    def disable_line_detection(self) -> bool:
+        """禁用绿线交点检测"""
+        try:
+            with self.line_detection_lock:
+                if self.line_detection_state == LineDetectionState.DISABLED:
+                    logger.info("Line detection is already disabled")
+                    return True
+
+                if self.line_detection_state in [LineDetectionState.DISABLING]:
+                    logger.info("Line detection is already being disabled")
+                    return True
+
+                logger.info("🛑 Disabling line detection...")
+                self.set_line_detection_state(LineDetectionState.DISABLING)
+
+                # 发送禁用请求到后端
+                success = self._send_line_detection_disable_request()
+
+                if success:
+                    self.set_line_detection_state(LineDetectionState.DISABLED)
+                    logger.info("✅ Line detection disabled successfully")
+                    return True
+                else:
+                    self.set_line_detection_state(LineDetectionState.ERROR, "Failed to disable detection")
+                    logger.error("❌ Failed to disable line detection")
+                    return False
+
+        except Exception as e:
+            error_msg = f"Exception while disabling line detection: {str(e)}"
+            self.set_line_detection_state(LineDetectionState.ERROR, error_msg)
+            logger.error(f"❌ {error_msg}")
+            return False
+
+    def add_line_detection_state_callback(self, callback: callable):
+        """添加状态变化回调函数"""
+        with self.line_detection_lock:
+            if callback not in self.line_detection_state_callbacks:
+                self.line_detection_state_callbacks.append(callback)
+                logger.debug(f"Added line detection state callback: {callback}")
+
+    def remove_line_detection_state_callback(self, callback: callable):
+        """移除状态变化回调函数"""
+        with self.line_detection_lock:
+            if callback in self.line_detection_state_callbacks:
+                self.line_detection_state_callbacks.remove(callback)
+                logger.debug(f"Removed line detection state callback: {callback}")
+
+    def cleanup_line_detection_state(self):
+        """清理绿线交点检测状态管理资源"""
+        try:
+            with self.line_detection_lock:
+                logger.info("🧹 Cleaning up line detection state management...")
+
+                # 停止状态同步线程
+                self._stop_state_sync_thread()
+
+                # 如果检测正在运行，尝试禁用
+                if self.line_detection_state == LineDetectionState.ENABLED:
+                    try:
+                        self._send_line_detection_disable_request()
+                    except Exception as e:
+                        logger.warning(f"Failed to disable detection during cleanup: {e}")
+
+                # 保存最终状态
+                self._save_line_detection_state()
+
+                # 清理回调函数
+                self.line_detection_state_callbacks.clear()
+
+                # 重置状态
+                self.line_detection_state = LineDetectionState.DISABLED
+                self.state_recovery_in_progress = False
+
+                logger.info("✅ Line detection state management cleaned up successfully")
+
+        except Exception as e:
+            logger.error(f"❌ Error during line detection state cleanup: {e}")
+
+    # ================== 私有状态管理方法 ==================
+
+    def _is_valid_state_transition(self, old_state: LineDetectionState, new_state: LineDetectionState) -> bool:
+        """检查状态转换是否合法"""
+        valid_transitions = {
+            LineDetectionState.DISABLED: [LineDetectionState.ENABLING, LineDetectionState.ERROR],
+            LineDetectionState.ENABLING: [LineDetectionState.ENABLED, LineDetectionState.DISABLED, LineDetectionState.ERROR],
+            LineDetectionState.ENABLED: [LineDetectionState.DISABLING, LineDetectionState.ERROR],
+            LineDetectionState.DISABLING: [LineDetectionState.DISABLED, LineDetectionState.ENABLED, LineDetectionState.ERROR],
+            LineDetectionState.ERROR: [LineDetectionState.DISABLED, LineDetectionState.ENABLING]
         }
+        return new_state in valid_transitions.get(old_state, [])
+
+    def _get_backend_line_detection_status(self) -> Optional[Dict[str, Any]]:
+        """获取后端绿线交点检测状态"""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/api/roi/line-intersection/status",
+                timeout=self.line_detection_config.timeout
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"Backend status request failed: {response.status_code}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Failed to get backend line detection status: {e}")
+            return None
+
+    def _send_line_detection_enable_request(self) -> bool:
+        """发送启用绿线交点检测请求"""
+        try:
+            for attempt in range(self.line_detection_config.retry_count):
+                try:
+                    response = self.session.post(
+                        f"{self.base_url}/api/roi/line-intersection/enable",
+                        data={"password": self.password},
+                        timeout=self.line_detection_config.timeout
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get('success', True):
+                            return True
+                        else:
+                            error_msg = result.get('error', 'Unknown error')
+                            logger.warning(f"Enable request failed: {error_msg}")
+
+                    logger.warning(f"Enable request attempt {attempt + 1} failed: {response.status_code}")
+
+                except Exception as e:
+                    logger.warning(f"Enable request attempt {attempt + 1} exception: {e}")
+
+                if attempt < self.line_detection_config.retry_count - 1:
+                    time.sleep(self.line_detection_config.retry_delay)
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Exception in enable request: {e}")
+            return False
+
+    def _send_line_detection_disable_request(self) -> bool:
+        """发送禁用绿线交点检测请求"""
+        try:
+            for attempt in range(self.line_detection_config.retry_count):
+                try:
+                    response = self.session.post(
+                        f"{self.base_url}/api/roi/line-intersection/disable",
+                        data={"password": self.password},
+                        timeout=self.line_detection_config.timeout
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get('success', True):
+                            return True
+                        else:
+                            error_msg = result.get('error', 'Unknown error')
+                            logger.warning(f"Disable request failed: {error_msg}")
+
+                    logger.warning(f"Disable request attempt {attempt + 1} failed: {response.status_code}")
+
+                except Exception as e:
+                    logger.warning(f"Disable request attempt {attempt + 1} exception: {e}")
+
+                if attempt < self.line_detection_config.retry_count - 1:
+                    time.sleep(self.line_detection_config.retry_delay)
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Exception in disable request: {e}")
+            return False
+
+    def _notify_state_change_callbacks(self, old_state: LineDetectionState,
+                                     new_state: LineDetectionState, error_msg: str = None):
+        """通知状态变化回调函数"""
+        try:
+            for callback in self.line_detection_state_callbacks:
+                try:
+                    callback(old_state, new_state, error_msg)
+                except Exception as e:
+                    logger.error(f"Error in state change callback: {e}")
+        except Exception as e:
+            logger.error(f"Error notifying state change callbacks: {e}")
+
+    def _save_line_detection_state(self) -> bool:
+        """保存绿线交点检测状态到本地配置"""
+        try:
+            config_file = "line_detection_state.json"
+
+            state_data = {
+                "state": self.line_detection_state.value,
+                "config": self.line_detection_config.to_dict(),
+                "last_saved": time.time()
+            }
+
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(state_data, f, indent=2, ensure_ascii=False)
+
+            logger.debug("Line detection state saved to local config")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save line detection state: {e}")
+            return False
+
+    def _load_line_detection_state(self) -> bool:
+        """从本地配置加载绿线交点检测状态"""
+        try:
+            config_file = "line_detection_state.json"
+
+            if not os.path.exists(config_file):
+                logger.debug("No local line detection state config found")
+                return False
+
+            with open(config_file, 'r', encoding='utf-8') as f:
+                state_data = json.load(f)
+
+            # 加载状态
+            state_str = state_data.get('state', 'disabled')
+            self.line_detection_state = LineDetectionState(state_str)
+
+            # 加载配置
+            config_data = state_data.get('config', {})
+            self.line_detection_config = LineDetectionConfig.from_dict(config_data)
+
+            saved_time = state_data.get('last_saved', 0)
+            logger.debug(f"Line detection state loaded from local config (saved: {time.ctime(saved_time)})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to load line detection state: {e}")
+            return False
+
+    def _start_state_sync_thread(self):
+        """启动状态同步线程"""
+        if self.state_sync_running:
+            logger.debug("State sync thread is already running")
+            return
+
+        self.state_sync_running = True
+        self.state_sync_thread = threading.Thread(target=self._state_sync_loop, daemon=True)
+        self.state_sync_thread.start()
+        logger.debug("State sync thread started")
+
+    def _stop_state_sync_thread(self):
+        """停止状态同步线程"""
+        if not self.state_sync_running:
+            return
+
+        self.state_sync_running = False
+
+        if self.state_sync_thread and self.state_sync_thread.is_alive():
+            self.state_sync_thread.join(timeout=2)
+
+        logger.debug("State sync thread stopped")
+
+    def _state_sync_loop(self):
+        """状态同步循环"""
+        while self.state_sync_running:
+            try:
+                # 检查是否需要同步
+                current_time = time.time()
+                time_since_last_sync = current_time - self.last_state_sync_time
+
+                if time_since_last_sync >= self.line_detection_config.sync_interval:
+                    self.sync_line_detection_state()
+
+                # 睡眠一小段时间
+                time.sleep(1.0)
+
+            except Exception as e:
+                logger.error(f"Error in state sync loop: {e}")
+                time.sleep(5.0)  # 出错时等待更长时间
+
+    def _handle_connection_lost(self):
+        """处理连接丢失事件"""
+        try:
+            with self.line_detection_lock:
+                if not self.line_detection_config.auto_recovery:
+                    logger.info("Auto-recovery disabled for line detection")
+                    return
+
+                if self.state_recovery_in_progress:
+                    logger.debug("State recovery already in progress")
+                    return
+
+                logger.info("🔄 Connection lost, starting line detection state recovery...")
+                self.state_recovery_in_progress = True
+
+                # 将状态设为错误，等待连接恢复后处理
+                if self.line_detection_state in [LineDetectionState.ENABLED, LineDetectionState.ENABLING]:
+                    self.set_line_detection_state(LineDetectionState.ERROR, "Connection lost")
+
+        except Exception as e:
+            logger.error(f"Error handling connection lost: {e}")
+
+    def _handle_connection_restored(self):
+        """处理连接恢复事件"""
+        try:
+            with self.line_detection_lock:
+                if not self.state_recovery_in_progress:
+                    logger.debug("No state recovery needed")
+                    return
+
+                logger.info("🔄 Connection restored, recovering line detection state...")
+
+                # 如果之前是启用状态，尝试恢复
+                if self.line_detection_config.enabled:
+                    logger.info("🔄 Attempting to recover line detection...")
+                    success = self.enable_line_detection()
+
+                    if success:
+                        logger.info("✅ Line detection state recovered successfully")
+                    else:
+                        logger.warning("⚠️ Line detection state recovery failed")
+                else:
+                    logger.info("🔄 Syncing line detection state with backend...")
+                    self.sync_line_detection_state()
+
+                self.state_recovery_in_progress = False
+
+        except Exception as e:
+            logger.error(f"Error handling connection restored: {e}")
+            self.state_recovery_in_progress = False
+
+    def _load_line_detection_config(self):
+        """加载绿线检测配置"""
+        try:
+            logger.info("🔄 正在加载绿线检测配置...")
+
+            # 检查配置管理器是否可用
+            if self.line_detection_config_manager is None:
+                logger.error("❌ 绿线检测配置管理器未初始化")
+                return False
+
+            # 加载配置
+            success, message, config_data = self.line_detection_config_manager.load_config()
+
+            if success:
+                self.line_detection_config_loaded = True
+                line_detection_config = self.line_detection_config_manager.get_line_detection_config()
+
+                # 更新绿线检测配置对象
+                self.line_detection_config.enabled = line_detection_config.get("enabled", False)
+                self.line_detection_config.auto_start = line_detection_config.get("auto_start", False)
+                self.line_detection_config.auto_recovery = line_detection_config.get("auto_recovery", True)
+                self.line_detection_config.sync_interval = line_detection_config.get("sync_interval", 5.0)
+                self.line_detection_config.timeout = line_detection_config.get("timeout", 10.0)
+                self.line_detection_config.retry_count = line_detection_config.get("retry_count", 3)
+                self.line_detection_config.retry_delay = line_detection_config.get("retry_delay", 1.0)
+
+                logger.info("✅ 绿线检测配置加载完成")
+                return True
+
+            else:
+                logger.warning(f"⚠️ 绿线检测配置加载失败: {message}")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ 绿线检测配置加载异常: {str(e)}")
+            return False
 
 
 class HTTPRealtimeClientUI(tk.Tk):
@@ -243,9 +1070,22 @@ class HTTPRealtimeClientUI(tk.Tk):
         # ROI图像缓存
         self._last_image = None
 
+        # Line Detection Widget
+        self.line_detection_widget = None
+        self.show_line_detection = True  # Configuration option for show/hide
+
         # 构建UI
         self._build_widgets()
         self._setup_plotter()
+
+        # 加载绿线检测配置
+        if self.http_client and hasattr(self.http_client, '_load_line_detection_config'):
+            try:
+                self.http_client._load_line_detection_config()
+            except Exception as e:
+                self._log(f"绿线检测配置加载失败: {str(e)}", "WARNING")
+        else:
+            self._log("绿线检测配置管理器不可用，跳过配置加载", "INFO")
 
         # 绑定关闭事件
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -293,6 +1133,10 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.btn_ui_toggle = ttk.Button(control_frame, text="缩小", command=self._toggle_ui_mode)
         self.btn_ui_toggle.pack(side="right", padx=8, pady=4)
 
+        # 绿线检测切换按钮
+        self.btn_line_detection_toggle = ttk.Button(control_frame, text="启用检测", command=self._toggle_line_detection)
+        self.btn_line_detection_toggle.pack(side="right", padx=8, pady=4)
+
         # 附加按钮（在紧凑模式下隐藏）
         self.btn_clear = ttk.Button(control_frame, text="清除数据", command=self._clear_data, state="disabled")
         self.btn_clear.pack(side="left", padx=8, pady=4)
@@ -303,12 +1147,26 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.btn_capture = ttk.Button(control_frame, text="截取曲线", command=self._capture_curve, state="disabled")
         self.btn_capture.pack(side="left", padx=8, pady=4)
 
-        # 主框架 - 左侧信息，右侧图表
+        # 主框架 - 使用Notebook创建标签页界面
         main_frame = ttk.Frame(self)
         main_frame.pack(fill="both", expand=True, padx=8, pady=4)
 
+        # 创建Notebook用于标签页
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        # 标签页1: 实时监控 (原有功能)
+        self.monitoring_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.monitoring_frame, text="实时监控")
+
+        # 标签页2: 绿线交点检测 (LineDetectionWidget)
+        if self.show_line_detection:
+            self.line_detection_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.line_detection_frame, text="绿线交点检测")
+
+        # 在监控标签页中构建原有布局
         # 左侧信息面板
-        self.info_frame = ttk.LabelFrame(main_frame, text="实时信息")
+        self.info_frame = ttk.LabelFrame(self.monitoring_frame, text="实时信息")
         self.info_frame.pack(side="left", fill="y", padx=(0, 8))
 
         # 状态信息
@@ -415,6 +1273,12 @@ class HTTPRealtimeClientUI(tk.Tk):
         ttk.Button(config_buttons, text="保存配置", command=self._save_config).pack(side="left", padx=4)
         ttk.Button(config_buttons, text="加载配置", command=self._load_config).pack(side="left", padx=4)
 
+        # 绿线检测配置管理按钮
+        ttk.Separator(config_buttons, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(config_buttons, text="备份绿线配置", command=self._backup_line_detection_config).pack(side="left", padx=4)
+        ttk.Button(config_buttons, text="导出绿线配置", command=self._export_line_detection_config_dialog).pack(side="left", padx=4)
+        ttk.Button(config_buttons, text="重载绿线配置", command=self._reload_line_detection_config).pack(side="left", padx=4)
+
         # ROI截图显示面板
         roi_frame = ttk.LabelFrame(self.info_frame, text="ROI Screenshot")
         roi_frame.pack(fill="x", padx=8, pady=4)
@@ -461,8 +1325,8 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=40)
         self.log_text.pack(fill="both", expand=True, padx=4, pady=4)
 
-        # 右侧图表区域
-        right_frame = ttk.Frame(main_frame)
+        # 右侧图表区域 (在监控标签页内)
+        right_frame = ttk.Frame(self.monitoring_frame)
         right_frame.pack(side="right", fill="both", expand=True)
 
         # 上方截取曲线显示框架 - 放在实时图表上方
@@ -523,6 +1387,52 @@ class HTTPRealtimeClientUI(tk.Tk):
             no_mpl_label.pack(expand=True)
             self.plotter = None
 
+        # 设置LineDetectionWidget
+        self._setup_line_detection_widget()
+
+    def _setup_line_detection_widget(self):
+        """设置LineDetectionWidget"""
+        try:
+            if self.show_line_detection and hasattr(self, 'line_detection_frame'):
+                # LineDetectionWidget配置
+                line_detection_config = {
+                    'figure_size': (12, 8),
+                    'update_interval': 100,  # 100ms更新间隔
+                    'enable_toolbar': True,
+                    'enable_interactive': True,
+                    'initial_view_mode': 'full'  # 'full', 'roi_only', 'zoom'
+                }
+
+                # 创建LineDetectionWidget实例
+                self.line_detection_widget = LineDetectionWidget(
+                    self.line_detection_frame,
+                    config=line_detection_config
+                )
+
+                # 打包LineDetectionWidget
+                self.line_detection_widget.pack(fill="both", expand=True, padx=8, pady=8)
+
+                self._log("✅ LineDetectionWidget初始化成功")
+                logger.info("LineDetectionWidget initialized successfully")
+
+            else:
+                logger.info("LineDetectionWidget disabled in configuration")
+
+        except Exception as e:
+            error_msg = f"LineDetectionWidget初始化失败: {str(e)}"
+            self._log(error_msg, "ERROR")
+            logger.error(f"Failed to initialize LineDetectionWidget: {e}")
+
+            # 显示错误信息在LineDetection框架中
+            if hasattr(self, 'line_detection_frame'):
+                error_label = ttk.Label(
+                    self.line_detection_frame,
+                    text=f"绿线交点检测组件初始化失败:\n{str(e)}",
+                    foreground="red",
+                    justify="center"
+                )
+                error_label.pack(expand=True)
+
     def auto_connect_and_start(self):
         """自动连接并启动数据收集"""
         try:
@@ -541,6 +1451,25 @@ class HTTPRealtimeClientUI(tk.Tk):
 
             # 创建HTTP客户端
             self.http_client = HTTPRealtimeClient(base_url=base_url, password=password)
+
+            # 加载绿线检测配置
+            if hasattr(self.http_client, '_load_line_detection_config'):
+                try:
+                    self.http_client._load_line_detection_config()
+                except Exception as e:
+                    self._log(f"绿线检测配置加载失败: {str(e)}", "WARNING")
+
+            # 注册绿线交点检测状态变化回调
+            self.http_client.add_line_detection_state_callback(self._on_line_detection_state_changed)
+
+            # 设置绿线交点检测回调
+            if hasattr(self, 'line_detection_widget') and self.line_detection_widget:
+                self.http_client.set_line_intersection_callback(
+                    self._handle_line_intersection_update
+                )
+
+            # 应用本地配置中的增强数据设置
+            self._apply_enhanced_data_from_client_config()
 
             # 测试连接
             if self.http_client.test_connection():
@@ -636,6 +1565,25 @@ class HTTPRealtimeClientUI(tk.Tk):
             # 创建HTTP客户端
             self.http_client = HTTPRealtimeClient(base_url=base_url, password=password)
 
+            # 加载绿线检测配置
+            if hasattr(self.http_client, '_load_line_detection_config'):
+                try:
+                    self.http_client._load_line_detection_config()
+                except Exception as e:
+                    self._log(f"绿线检测配置加载失败: {str(e)}", "WARNING")
+
+            # 注册绿线交点检测状态变化回调
+            self.http_client.add_line_detection_state_callback(self._on_line_detection_state_changed)
+
+            # 设置绿线交点检测回调
+            if hasattr(self, 'line_detection_widget') and self.line_detection_widget:
+                self.http_client.set_line_intersection_callback(
+                    self._handle_line_intersection_update
+                )
+
+            # 应用本地配置中的增强数据设置
+            self._apply_enhanced_data_from_client_config()
+
             # 测试连接
             if self.http_client.test_connection():
                 self.connected = True
@@ -657,6 +1605,8 @@ class HTTPRealtimeClientUI(tk.Tk):
         """断开连接"""
         if self.http_client:
             self.http_client.stop_polling()
+            # 清理绿线交点检测状态管理
+            self.http_client.cleanup_line_detection_state()
             self.http_client = None
 
         self.connected = False
@@ -1527,6 +2477,11 @@ class HTTPRealtimeClientUI(tk.Tk):
                     "threshold": float(self.peak_threshold_var.get()),
                     "margin_frames": int(self.peak_margin_var.get()),
                     "difference_threshold": float(self.peak_diff_var.get())
+                },
+                "line_detection": {
+                    "enabled": self.show_line_detection,
+                    "auto_start": False,
+                    "update_interval": 100
                 }
             }
 
@@ -1659,6 +2614,46 @@ class HTTPRealtimeClientUI(tk.Tk):
             else:
                 missing_fields.append("peak_detection")
 
+            # 应用绿线检测配置
+            if "line_detection" in config_dict:
+                line_config = config_dict["line_detection"]
+                line_detection_enabled = line_config.get("enabled", True)
+
+                # 更新显示状态但不强制创建标签页（因为窗口已经构建）
+                if self.show_line_detection != line_detection_enabled:
+                    self.show_line_detection = line_detection_enabled
+                    # 更新按钮文本
+                    if hasattr(self, 'btn_line_detection_toggle'):
+                        if self.show_line_detection:
+                            self.btn_line_detection_toggle.config(text="隐藏绿线检测")
+                        else:
+                            self.btn_line_detection_toggle.config(text="显示绿线检测")
+
+                config_applied = True
+            else:
+                missing_fields.append("line_detection")
+
+            # 同步绿线检测配置与后端
+            if hasattr(self, 'http_client') and self.http_client and self.http_client.line_detection_config_loaded:
+                self.http_client._sync_line_detection_config_with_backend(config_dict)
+
+            # 应用增强数据配置
+            if "enhanced_data" in config_dict:
+                enhanced_config = config_dict["enhanced_data"]
+
+                # 如果HTTP客户端已创建，应用配置到客户端
+                if hasattr(self, 'http_client') and self.http_client:
+                    self.http_client.set_enhanced_data_config(
+                        include_line_intersection=enhanced_config.get("include_line_intersection", True),
+                        enhanced_data_enabled=enhanced_config.get("enabled", True),
+                        fallback_on_error=enhanced_config.get("fallback_on_error", True)
+                    )
+
+                config_applied = True
+                self._log("✅ 增强数据配置已应用")
+            else:
+                missing_fields.append("enhanced_data")
+
             if config_applied:
                 self._log("✅ 成功应用服务器配置到UI")
                 if missing_fields:
@@ -1676,6 +2671,11 @@ class HTTPRealtimeClientUI(tk.Tk):
         """从本地配置文件加载配置"""
         try:
             self._log("🔄 正在加载本地配置文件...")
+
+            # 检查本地配置加载器是否可用
+            if not LOCAL_CONFIG_LOADER_AVAILABLE or LocalConfigLoader is None:
+                self._log("❌ 本地配置加载器不可用", "WARNING")
+                return False
 
             # 创建本地配置加载器
             config_loader = LocalConfigLoader()
@@ -1740,6 +2740,281 @@ class HTTPRealtimeClientUI(tk.Tk):
             self._log(f"❌ 自动配置加载异常: {str(e)}", "ERROR")
             return False
 
+    def _load_line_detection_config(self):
+        """加载绿线检测配置"""
+        try:
+            self._log("🔄 正在加载绿线检测配置...")
+
+            # 检查配置管理器是否可用
+            if self.line_detection_config_manager is None:
+                self._log("❌ 绿线检测配置管理器未初始化", "ERROR")
+                return False
+
+            # 加载配置
+            success, message, config_data = self.line_detection_config_manager.load_config()
+
+            if success:
+                self.line_detection_config_loaded = True
+                line_detection_config = self.line_detection_config_manager.get_line_detection_config()
+
+                # 更新绿线检测配置对象
+                self.line_detection_config.enabled = line_detection_config.get("enabled", False)
+                self.line_detection_config.auto_start = line_detection_config.get("auto_start", False)
+
+                # 获取性能配置
+                performance_config = line_detection_config.get("performance", {})
+                self.line_detection_config.timeout = performance_config.get("processing_timeout_ms", 300) / 1000.0
+                self.line_detection_config.retry_count = performance_config.get("max_retries", 3)
+                self.line_detection_config.retry_delay = performance_config.get("retry_delay_ms", 100) / 1000.0
+
+                # 获取同步配置
+                sync_config = line_detection_config.get("synchronization", {})
+                self.line_detection_config.sync_interval = sync_config.get("sync_interval_ms", 1000) / 1000.0
+
+                self._log(f"✅ 绿线检测配置加载成功")
+                self._log(f"   - 检测启用: {self.line_detection_config.enabled}")
+                self._log(f"   - 自动启动: {self.line_detection_config.auto_start}")
+                self._log(f"   - 超时时间: {self.line_detection_config.timeout:.1f}秒")
+                self._log(f"   - 同步间隔: {self.line_detection_config.sync_interval:.1f}秒")
+
+                # 如果配置了自动启动，则启用绿线检测
+                if self.line_detection_config.auto_start and self.connected:
+                    self._log("🚀 配置自动启动绿线检测...")
+                    self._start_line_detection_state_sync()
+
+                return True
+            else:
+                self._log(f"❌ 绿线检测配置加载失败: {message}")
+                self.line_detection_config_loaded = False
+                return False
+
+        except Exception as e:
+            self._log(f"❌ 绿线检测配置加载异常: {str(e)}", "ERROR")
+            self.line_detection_config_loaded = False
+            return False
+
+    def _sync_line_detection_config_with_backend(self, backend_config: Dict[str, Any]):
+        """同步绿线检测配置与后端"""
+        try:
+            if not self.line_detection_config_loaded:
+                self._log("⚠️ 绿线检测配置未加载，跳过后端同步")
+                return False
+
+            self._log("🔄 正在同步绿线检测配置与后端...")
+
+            success, message = self.line_detection_config_manager.sync_with_backend(backend_config)
+
+            if success:
+                self._log(f"✅ {message}")
+
+                # 重新加载配置以获取同步后的设置
+                line_detection_config = self.line_detection_config_manager.get_line_detection_config()
+
+                # 更新运行时配置
+                detection_config = line_detection_config.get("detection", {})
+
+                self._log("🎯 同步完成，参数已更新")
+                return True
+            else:
+                self._log(f"❌ 同步失败: {message}")
+                return False
+
+        except Exception as e:
+            self._log(f"❌ 同步绿线检测配置异常: {str(e)}", "ERROR")
+            return False
+
+    def _create_line_detection_config_backup(self):
+        """创建绿线检测配置备份"""
+        try:
+            if not self.line_detection_config_loaded:
+                self._log("⚠️ 绿线检测配置未加载，跳过备份创建")
+                return False
+
+            success, message = self.line_detection_config_manager.create_backup()
+
+            if success:
+                self._log(f"✅ 绿线检测配置备份创建成功")
+                return True
+            else:
+                self._log(f"❌ 备份创建失败: {message}")
+                return False
+
+        except Exception as e:
+            self._log(f"❌ 创建配置备份异常: {str(e)}", "ERROR")
+            return False
+
+    def _export_line_detection_config(self, export_path: str = None):
+        """导出绿线检测配置"""
+        try:
+            if not self.line_detection_config_loaded:
+                self._log("⚠️ 绿线检测配置未加载，无法导出")
+                return False
+
+            if not export_path:
+                # 默认导出路径
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_path = f"./exports/line_detection_config_{timestamp}.json"
+
+            # 确保导出目录存在
+            import os
+            os.makedirs(os.path.dirname(export_path), exist_ok=True)
+
+            success, message = self.line_detection_config_manager.export_config(export_path)
+
+            if success:
+                self._log(f"✅ 绿线检测配置导出成功: {export_path}")
+                return True
+            else:
+                self._log(f"❌ 配置导出失败: {message}")
+                return False
+
+        except Exception as e:
+            self._log(f"❌ 导出配置异常: {str(e)}", "ERROR")
+            return False
+
+    def _get_line_detection_ui_config(self) -> Dict[str, Any]:
+        """获取绿线检测UI配置"""
+        try:
+            if not self.line_detection_config_loaded:
+                return {}
+
+            line_detection_config = self.line_detection_config_manager.get_line_detection_config()
+            ui_config = line_detection_config.get("ui", {})
+
+            return {
+                "enable_widget": ui_config.get("enable_widget", True),
+                "show_control_panel": ui_config.get("show_control_panel", True),
+                "show_statistics_panel": ui_config.get("show_statistics_panel", True),
+                "show_debug_panel": ui_config.get("show_debug_panel", False),
+                "display_colors": ui_config.get("display_colors", {}),
+                "font_settings": ui_config.get("font_settings", {}),
+                "layout": ui_config.get("layout", {}),
+                "animation": ui_config.get("animation", {})
+            }
+
+        except Exception as e:
+            self._log(f"❌ 获取UI配置异常: {str(e)}", "ERROR")
+            return {}
+
+    def _get_line_detection_detection_config(self) -> Dict[str, Any]:
+        """获取绿线检测算法配置"""
+        try:
+            if not self.line_detection_config_loaded:
+                return {}
+
+            line_detection_config = self.line_detection_config_manager.get_line_detection_config()
+            return line_detection_config.get("detection", {})
+
+        except Exception as e:
+            self._log(f"❌ 获取检测配置异常: {str(e)}", "ERROR")
+            return {}
+
+    def _toggle_line_detection(self):
+        """切换绿线检测标签页显示"""
+        try:
+            current_visible = self.show_line_detection
+
+            if current_visible:
+                # 隐藏绿线检测标签页
+                if hasattr(self, 'line_detection_frame') and self.line_detection_frame in self.notebook.children.values():
+                    # 获取当前索引
+                    current_index = self.notebook.index(self.notebook.select())
+                    # 移除标签页
+                    self.notebook.forget(self.line_detection_frame)
+                    self.show_line_detection = False
+                    self.btn_line_detection_toggle.config(text="显示绿线检测")
+                    self._log("绿线检测标签页已隐藏")
+
+                    # 如果当前在绿线检测标签页，切换到监控标签页
+                    if hasattr(self, 'line_detection_frame'):
+                        try:
+                            self.notebook.select(self.monitoring_frame)
+                        except:
+                            pass
+            else:
+                # 显示绿线检测标签页
+                self.show_line_detection = True
+                self.line_detection_frame = ttk.Frame(self.notebook)
+                self.notebook.add(self.line_detection_frame, text="绿线交点检测")
+                self.btn_line_detection_toggle.config(text="隐藏绿线检测")
+                self._log("绿线检测标签页已显示")
+
+                # 重新初始化LineDetectionWidget
+                self._setup_line_detection_widget()
+
+        except Exception as e:
+            error_msg = f"切换绿线检测显示失败: {str(e)}"
+            self._log(error_msg, "ERROR")
+            logger.error(f"Failed to toggle line detection: {e}")
+
+    def _on_line_detection_state_changed(self, old_state: LineDetectionState,
+                                    new_state: LineDetectionState, error_msg: str = None):
+        """处理绿线交点检测状态变化回调"""
+        try:
+            # 更新按钮文本和状态
+            if hasattr(self, 'btn_line_detection_toggle'):
+                if new_state == LineDetectionState.ENABLED:
+                    self.btn_line_detection_toggle.config(text="禁用检测", state="normal")
+                    self._log("✅ 绿线交点检测已启用")
+                elif new_state == LineDetectionState.DISABLED:
+                    self.btn_line_detection_toggle.config(text="启用检测", state="normal")
+                    self._log("⏹️ 绿线交点检测已禁用")
+                elif new_state == LineDetectionState.ENABLING:
+                    self.btn_line_detection_toggle.config(text="启用中...", state="disabled")
+                    self._log("🔄 正在启用绿线交点检测...")
+                elif new_state == LineDetectionState.DISABLING:
+                    self.btn_line_detection_toggle.config(text="禁用中...", state="disabled")
+                    self._log("🔄 正在禁用绿线交点检测...")
+                elif new_state == LineDetectionState.ERROR:
+                    self.btn_line_detection_toggle.config(text="启用检测", state="normal")
+                    error_text = f"绿线交点检测错误: {error_msg}" if error_msg else "绿线交点检测发生错误"
+                    self._log(f"❌ {error_text}", "ERROR")
+
+        except Exception as e:
+            logger.error(f"Error handling line detection state change: {e}")
+
+    def _toggle_line_detection(self):
+        """切换绿线交点检测状态"""
+        try:
+            if not self.http_client:
+                messagebox.showerror("错误", "请先连接到服务器")
+                return
+
+            current_state = self.http_client.get_line_detection_state()
+
+            if current_state in [LineDetectionState.DISABLED, LineDetectionState.ERROR]:
+                # 尝试启用检测
+                self._log("🚀 正在启用绿线交点检测...")
+                success = self.http_client.enable_line_detection()
+
+                if success:
+                    self._log("✅ 绿线交点检测启用成功")
+                else:
+                    self._log("❌ 绿线交点检测启用失败", "ERROR")
+                    messagebox.showerror("错误", "绿线交点检测启用失败")
+
+            elif current_state == LineDetectionState.ENABLED:
+                # 尝试禁用检测
+                self._log("🛑 正在禁用绿线交点检测...")
+                success = self.http_client.disable_line_detection()
+
+                if success:
+                    self._log("✅ 绿线交点检测禁用成功")
+                else:
+                    self._log("❌ 绿线交点检测禁用失败", "ERROR")
+                    messagebox.showerror("错误", "绿线交点检测禁用失败")
+
+            else:
+                # 正在转换中，提示用户等待
+                self._log("⏳ 绿线交点检测状态正在转换中，请稍候...", "INFO")
+                messagebox.showinfo("提示", "绿线交点检测状态正在转换中，请稍候...")
+
+        except Exception as e:
+            error_msg = f"切换绿线交点检测状态时发生错误: {str(e)}"
+            self._log(error_msg, "ERROR")
+            messagebox.showerror("错误", error_msg)
+
     def _on_closing(self):
         """窗口关闭事件"""
         try:
@@ -1749,6 +3024,13 @@ class HTTPRealtimeClientUI(tk.Tk):
             # 停止绘图动画
             if self.plotter:
                 self.plotter.stop_animation()
+
+            # 清理LineDetectionWidget
+            if self.line_detection_widget:
+                try:
+                    self.line_detection_widget.cleanup()
+                except Exception as e:
+                    logger.error(f"Error cleaning up LineDetectionWidget: {e}")
 
             # 销毁窗口
             self.destroy()
@@ -1777,6 +3059,8 @@ class HTTPRealtimeClientUI(tk.Tk):
                 self.btn_save.pack_forget()
             if self.btn_capture:
                 self.btn_capture.pack_forget()
+            if hasattr(self, 'btn_line_detection_toggle'):
+                self.btn_line_detection_toggle.pack_forget()
 
             # 简化状态文本
             if hasattr(self, 'status_var') and self.status_var:
@@ -1811,6 +3095,8 @@ class HTTPRealtimeClientUI(tk.Tk):
                 self.btn_save.pack(side="left", padx=8, pady=4, after=self.btn_clear)
             if self.btn_capture:
                 self.btn_capture.pack(side="left", padx=8, pady=4, after=self.btn_save)
+            if hasattr(self, 'btn_line_detection_toggle'):
+                self.btn_line_detection_toggle.pack(side="right", padx=8, pady=4)
 
             # 恢复详细状态文本
             if hasattr(self, 'status_var') and self.status_var:
@@ -1822,6 +3108,130 @@ class HTTPRealtimeClientUI(tk.Tk):
 
         # 重新布局和绘制
         self.update_idletasks()
+
+    def _apply_enhanced_data_from_client_config(self):
+        """从客户端配置文件应用增强数据设置"""
+        try:
+            # 加载客户端配置文件
+            config_file = "http_client_config.json"
+            if not os.path.exists(config_file):
+                self._log("⚠️ 客户端配置文件不存在，使用默认增强数据设置")
+                return
+
+            with open(config_file, 'r', encoding='utf-8') as f:
+                client_config = json.load(f)
+
+            enhanced_config = client_config.get("enhanced_data", {})
+            if enhanced_config and hasattr(self, 'http_client') and self.http_client:
+                self.http_client.set_enhanced_data_config(
+                    include_line_intersection=enhanced_config.get("include_line_intersection", True),
+                    enhanced_data_enabled=enhanced_config.get("enabled", True),
+                    fallback_on_error=enhanced_config.get("fallback_on_error", True)
+                )
+                self._log("✅ 客户端增强数据配置已应用")
+
+        except Exception as e:
+            self._log(f"❌ 应用客户端增强数据配置失败: {str(e)}", "ERROR")
+
+    def _handle_line_intersection_update(self, line_intersection_result):
+        """处理绿线交点检测结果更新"""
+        try:
+            logger.debug(f"Received line intersection update: {type(line_intersection_result)}")
+
+            # 更新LineDetectionWidget（如果存在）
+            if hasattr(self, 'line_detection_widget') and self.line_detection_widget:
+                self.line_detection_widget.update_line_intersection_data(line_intersection_result)
+
+            # 可以在这里添加其他绿线交点数据处理逻辑
+            # 例如：状态显示、日志记录等
+
+            if isinstance(line_intersection_result, dict):
+                status = line_intersection_result.get('status', 'unknown')
+                logger.debug(f"Line intersection status: {status}")
+
+        except Exception as e:
+            logger.error(f"Error handling line intersection update: {e}")
+
+    def _backup_line_detection_config(self):
+        """备份绿线检测配置"""
+        try:
+            if not self.http_client or not self.http_client.line_detection_config_loaded:
+                messagebox.showerror("错误", "绿线检测配置未加载")
+                return
+
+            success = self.http_client._create_line_detection_config_backup()
+            if success:
+                messagebox.showinfo("成功", "绿线检测配置备份已创建")
+            else:
+                messagebox.showerror("错误", "配置备份创建失败")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"备份配置时发生错误: {str(e)}")
+
+    def _export_line_detection_config_dialog(self):
+        """导出绿线检测配置对话框"""
+        try:
+            if not self.http_client or not self.http_client.line_detection_config_loaded:
+                messagebox.showerror("错误", "绿线检测配置未加载")
+                return
+
+            from tkinter import filedialog
+            from datetime import datetime
+
+            # 默认文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"line_detection_config_{timestamp}.json"
+
+            # 文件选择对话框
+            file_path = filedialog.asksaveasfilename(
+                title="导出绿线检测配置",
+                defaultextension=".json",
+                filetypes=[
+                    ("JSON文件", "*.json"),
+                    ("YAML文件", "*.yaml"),
+                    ("CSV文件", "*.csv"),
+                    ("所有文件", "*.*")
+                ],
+                initialfile=default_filename,
+                initialdir="./exports/"
+            )
+
+            if file_path:  # 用户选择了文件
+                success = self.http_client._export_line_detection_config(file_path)
+                if success:
+                    messagebox.showinfo("成功", f"配置已导出到: {file_path}")
+                else:
+                    messagebox.showerror("错误", "配置导出失败")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"导出配置时发生错误: {str(e)}")
+
+    def _reload_line_detection_config(self):
+        """重新加载绿线检测配置"""
+        try:
+            if not self.http_client:
+                messagebox.showerror("错误", "HTTP客户端未初始化")
+                return
+
+            # 重新加载配置
+            if hasattr(self.http_client, '_load_line_detection_config'):
+                success = self.http_client._load_line_detection_config()
+            else:
+                messagebox.showerror("错误", "绿线检测配置加载功能不可用")
+                return
+            if success:
+                # 更新UI显示
+                if hasattr(self, 'line_detection_widget') and self.line_detection_widget:
+                    ui_config = self.http_client._get_line_detection_ui_config()
+                    if ui_config.get("enable_widget", True):
+                        self.line_detection_widget.apply_ui_config(ui_config)
+
+                messagebox.showinfo("成功", "绿线检测配置已重新加载")
+            else:
+                messagebox.showerror("错误", "配置重新加载失败")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"重新加载配置时发生错误: {str(e)}")
 
 
 def main():
