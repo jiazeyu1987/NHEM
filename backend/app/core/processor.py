@@ -47,6 +47,14 @@ class DataProcessor:
             return
         self._stop_event.clear()
         data_store.set_status(SystemStatus.RUNNING)
+
+        # 启动ROI定时器
+        try:
+            roi_capture_service.start_roi_timer()
+            self._logger.info("ROI timer started by DataProcessor")
+        except Exception as e:
+            self._logger.error("Failed to start ROI timer: %s", str(e))
+
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self._logger.info("DataProcessor thread started with fps=%d", settings.fps)
@@ -55,6 +63,13 @@ class DataProcessor:
         self._stop_event.set()
         data_store.set_status(SystemStatus.STOPPED)
         self._logger.info("🛑 DataProcessor stop requested - stop_event set, status set to STOPPED")
+
+        # 停止ROI定时器
+        try:
+            roi_capture_service.stop_roi_timer()
+            self._logger.info("ROI timer stopped by DataProcessor")
+        except Exception as e:
+            self._logger.error("Failed to stop ROI timer: %s", str(e))
 
         # 等待线程真正停止
         if self._thread and self._thread.is_alive():
@@ -82,7 +97,6 @@ class DataProcessor:
                 # 使用双ROI数据：ROI2用于峰值检测，ROI1用于显示
                 roi1_data, roi2_data = roi_capture_service.capture_dual_roi(roi_config)
 
-                
                 if roi2_data and roi2_data.gray_value > 0:
                     # 使用ROI2（50x50中心区域）进行峰值检测
                     signal_value = roi2_data.gray_value

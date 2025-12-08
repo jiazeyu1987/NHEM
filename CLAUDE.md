@@ -23,12 +23,14 @@ pip install -r requirements.txt
 # Run the backend server
 python run.py
 
-# Test and validation scripts
+# Test and validation scripts (30+ available in root directory)
 python test_syntax_check.py          # Syntax validation
 python test_compile.py               # Compilation test
 python test_enhanced_endpoint.py     # Enhanced API endpoint test
 python test_memory_management.py     # Memory management validation
 python test_line_intersection.py     # Line detection functionality test
+python test_error_handling.py        # Error handling robustness test
+python test_line_detection_imports.py # Package dependency validation
 
 # The backend runs on http://localhost:8421
 # API endpoints available at http://localhost:8421/docs
@@ -74,6 +76,9 @@ python client.py start-detection --password 31415
 python test_line_detection.py           # Line detection API test
 python line_detection_api_example.py    # Line detection API usage example
 python validate_task32.py               # Task 32 validation script
+python test_line_detection_imports.py   # Line detection package import validation
+python test_error_handling.py           # Error handling robustness test
+python verify_memory_management.py      # Memory management and performance test
 ```
 
 ## Architecture Overview
@@ -108,6 +113,7 @@ python validate_task32.py               # Task 32 validation script
 - **Configuration**: `http_client_config.json` - Client-specific ROI and peak detection settings
 - **Line Detection State**: `line_detection_state.json` - Persistent line detection configuration (NEW)
 - **Local Config**: `local_config_loader.py` - Configuration management utilities
+- **Modular Line Detection**: Refactored from monolithic 4900+ line file into 15 focused modules in `line_detection/` package (NEW)
 
 ## Key Performance Characteristics
 
@@ -191,6 +197,7 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Configuration hierarchy: JSON file (`app/fem_config.json`) → Environment variables (`NHEM_*` prefix) → Code defaults
 - Runtime configuration updates via API endpoints with persistence in JSON format
 - Medical-grade error handling with severity classification and recovery mechanisms (NEW)
+- Memory pool system and OpenCV resource management for performance optimization (NEW)
 
 ### Frontend Development
 - Single-page application architecture
@@ -234,7 +241,8 @@ Backend API → Async Requests (20FPS) → Matplotlib Rendering → GUI Updates 
 - Network error handling with retry logic and connection status display
 - ROI capture debugging with base64 image preview
 - **Line Detection Debugging**: API client integration testing with `line_detection_api_client.py` (NEW)
-- Test scripts available: `test_line_detection.py`, `test_line_intersection.py`, `test_memory_management.py` (NEW)
+- Test scripts available: `test_line_detection.py`, `test_line_intersection.py`, `test_memory_management.py`, `test_error_handling.py` (NEW)
+- Manual testing approach with 30+ validation scripts for comprehensive functionality coverage (NEW)
 
 ## Security Considerations
 
@@ -290,6 +298,7 @@ NHEM/
 - **Dual ROI**: ROI1 (1100x500) + ROI2 (50x50 center extraction) (NEW)
 - **Line Detection**: OpenCV-based green line detection with configurable HSV thresholds (NEW)
 - **Performance Monitoring**: Memory tracking, processing time metrics, alert thresholds (NEW)
+- **Error Handling**: Medical-grade error classification and automatic recovery mechanisms (NEW)
 - **Default ROI**: x1=1480, y1=480, x2=1580, y2=580
 
 ### Client Configuration (`python_client/http_client_config.json`)
@@ -299,6 +308,7 @@ NHEM/
 - **Server Connection**: localhost:8421 with timeout settings
 - **Line Detection API**: Integration settings for line detection client (NEW)
 - **State Management**: Persistent configuration file path and recovery settings (NEW)
+- **Modular Package Configuration**: Settings for refactored line detection package structure (NEW)
 
 ### Frontend Configuration (`front/config.json`)
 - **Update Rate**: 20 FPS canvas rendering
@@ -311,7 +321,7 @@ NHEM/
 The project includes specialized slash commands in `.claude/commands/`:
 - `/spec-*` commands for specification management and requirements tracking
 - `/bug-*` commands for bug tracking and systematic fixing workflows
-- `/dual-roi-system` command for dual ROI functionality development
+- Spec-driven development with agent-based validation and template system
 
 ### Documentation Templates
 Professional templates available in `.claude/templates/`:
@@ -381,3 +391,62 @@ Python client features for line detection:
 - **State Persistence**: Configuration saved in `line_detection_state.json`
 - **Status Monitoring**: Real-time detection status and performance metrics
 - **Chinese Language Support**: Localized interface elements and documentation
+
+## Development Workflow and Testing
+
+### Manual Testing Strategy
+The project uses comprehensive manual testing rather than automated frameworks:
+- **30+ Test Scripts**: Located in root directory for specific functionality validation
+- **Import Validation**: `test_line_detection_imports.py` for package dependency checks
+- **Error Handling Tests**: `test_error_handling.py` for robustness validation
+- **Memory Management**: `verify_memory_management.py` for performance testing
+- **Syntax Validation**: Multiple syntax checkers across all components
+- **Integration Testing**: End-to-end workflow validation scripts
+
+### Spec-Driven Development Workflow
+The project includes a sophisticated development workflow system:
+- **Custom Slash Commands**: `/spec-*` and `/bug-*` commands in `.claude/commands/`
+- **Agent-Based Validation**: Specialized agents for requirements, design, and task validation
+- **Template System**: Professional templates for specifications, bugs, and technical documentation
+- **Task Atomicity**: 15-30 minute executable tasks with clear boundaries
+- **Hierarchical Context Management**: Sophisticated context loading for development workflows
+
+### Line Detection Modular Architecture
+The line detection system has been refactored from a monolithic 4900+ line file into 15 focused modules:
+- **config/**: Configuration management (widget, visualization, API)
+- **core/**: Visualization and interaction components
+- **business/**: Domain logic and API integration
+- **ui/**: UI components and state management
+- **utils/**: Error handling, geometry, and display utilities
+
+### Error Handling and Recovery
+- **Medical-Grade Error Handling**: Severity classification with automatic recovery
+- **Centralized Error Management**: Structured error system with user-friendly messages
+- **Recovery Guidance**: Context-aware recovery suggestions for different error categories
+- **Network Connectivity Monitoring**: Proactive network health checks
+- **Performance Thresholds**: Configurable memory and processing time alerts
+
+### Performance and Memory Management
+- **Memory Pool System**: Object pooling for efficient memory usage
+- **OpenCV Resource Management**: Specialized resource tracking and cleanup
+- **Context Managers**: Memory-aware resource management patterns
+- **Real-time Monitoring**: Built-in memory usage tracking and alerting
+- **Resource Cleanup**: Automatic garbage collection and resource deallocation
+
+## Project Limitations and Missing Components
+
+### Build and Deployment
+- **No Package Management**: Missing setup.py, pyproject.toml for client components
+- **No Containerization**: No Docker support or deployment automation
+- **No CI/CD**: No automated testing, building, or deployment pipelines
+- **No Environment Management**: No dev/staging/production environment separation
+
+### Testing Infrastructure
+- **No Formal Testing Framework**: No pytest, unittest, or automated test runners
+- **Manual Testing Only**: Relies on developer-driven test scripts
+- **No Code Coverage**: No coverage reporting or automated quality gates
+
+### Security and Authentication
+- **Basic Authentication Only**: Simple password-based control (default: 31415)
+- **No Advanced Security**: No OAuth, JWT, session management, or RBAC
+- **No Security Hardening**: Basic CORS configuration only

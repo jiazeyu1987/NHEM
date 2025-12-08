@@ -15,7 +15,7 @@
     "max_frame_count": 10000
   },
   "roi_capture": {
-    "frame_rate": 4,
+    "frame_rate": 1,
     "update_interval": 0.5,
     "default_config": {
       "x1": 1280,

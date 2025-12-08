@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 class SystemStatus(str, Enum):
     RUNNING = "running"
+    PAUSED = "paused"
     STOPPED = "stopped"
     ERROR = "error"
 
