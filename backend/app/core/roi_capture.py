@@ -45,8 +45,20 @@ class RoiCaptureService:
         self._last_intersection_point: Optional[LineIntersectionPoint] = None
         self._intersection_cache_valid = False
 
-        self._logger.info("ROI Capture Service initialized with JSON config: frame_rate=%d, update_interval=%.1f",
-                         self._frame_rate, self._cache_interval)
+        # ROI2专用缓存机制 - 解决闪烁问题
+        self._cached_roi2_data: Optional[RoiData] = None
+        self._last_roi2_config: Optional[RoiConfig] = None
+        self._last_roi2_capture_time = 0.0
+        self._roi2_cache_valid = False
+        self._roi2_cache_duration = 1.0  # ROI2缓存时间（秒），比ROI1更长避免闪烁
+
+        # ROI2坐标平滑机制
+        self._last_roi2_x: Optional[int] = None
+        self._last_roi2_y: Optional[int] = None
+        self._roi2_smoothing_factor = 0.8  # 平滑因子，越大越稳定
+
+        self._logger.info("ROI Capture Service initialized with JSON config: frame_rate=%d, update_interval=%.1f, roi2_cache=%.1f",
+                         self._frame_rate, self._cache_interval, self._roi2_cache_duration)
 
     def clear_cache(self):
         """
@@ -55,7 +67,18 @@ class RoiCaptureService:
         self._cached_roi_data = None
         self._last_roi_config = None
         self._last_capture_time = 0.0
-        self._logger.debug("ROI cache cleared - next capture will be forced")
+
+        # 清除ROI2缓存
+        self._cached_roi2_data = None
+        self._last_roi2_config = None
+        self._last_roi2_capture_time = 0.0
+        self._roi2_cache_valid = False
+
+        # 清除坐标平滑缓存
+        self._last_roi2_x = None
+        self._last_roi2_y = None
+
+        self._logger.debug("ROI and ROI2 cache cleared - next capture will be forced")
 
     def _update_intersection_cache(self, intersection_point: Optional[LineIntersectionPoint]):
         """更新绿线交点缓存"""
@@ -76,6 +99,54 @@ class RoiCaptureService:
     def get_last_intersection_point(self) -> Optional[LineIntersectionPoint]:
         """获取最后缓存的交点坐标"""
         return self._last_intersection_point if self._intersection_cache_valid else None
+
+    def _is_roi2_cache_valid(self, roi_config: RoiConfig, current_time: float) -> bool:
+        """检查ROI2缓存是否有效"""
+        if not self._roi2_cache_valid or self._cached_roi2_data is None:
+            return False
+
+        # 检查时间有效性
+        time_valid = (current_time - self._last_roi2_capture_time) < self._roi2_cache_duration
+        if not time_valid:
+            self._logger.debug("ROI2 cache expired")
+            return False
+
+        # 检查配置变化
+        config_unchanged = (self._last_roi2_config is not None and
+                           self._roi_config_changed(roi_config, self._last_roi2_config) == False)
+        if not config_unchanged:
+            self._logger.debug("ROI2 cache invalid due to config change")
+            return False
+
+        return True
+
+    def _update_roi2_cache(self, roi_config: RoiConfig, roi2_data: RoiData, current_time: float):
+        """更新ROI2缓存"""
+        self._cached_roi2_data = roi2_data
+        self._last_roi2_config = roi_config
+        self._last_roi2_capture_time = current_time
+        self._roi2_cache_valid = True
+
+        # ROI2缓存更新监控
+        self._logger.info(f"ROI2 cache updated - gray_value: {roi2_data.gray_value:.2f}, "
+                         f"cache_duration: {self._roi2_cache_duration:.1f}s")
+
+    def _smooth_roi2_coordinates(self, new_x: int, new_y: int) -> Tuple[int, int]:
+        """平滑ROI2坐标变化，避免闪烁"""
+        if self._last_roi2_x is not None and self._last_roi2_y is not None:
+            # 使用加权平均进行平滑
+            smoothed_x = int(self._roi2_smoothing_factor * self._last_roi2_x +
+                           (1 - self._roi2_smoothing_factor) * new_x)
+            smoothed_y = int(self._roi2_smoothing_factor * self._last_roi2_y +
+                           (1 - self._roi2_smoothing_factor) * new_y)
+        else:
+            smoothed_x = new_x
+            smoothed_y = new_y
+
+        self._last_roi2_x = smoothed_x
+        self._last_roi2_y = smoothed_y
+
+        return smoothed_x, smoothed_y
 
     def capture_screen(self) -> Optional[Image.Image]:
         """
@@ -333,28 +404,55 @@ class RoiCaptureService:
 
             current_time = time.time()
 
-            # 使用相同的缓存机制（基于ROI1配置）
-            time_valid = current_time - self._last_capture_time < self._cache_interval
-            config_unchanged = (self._last_roi_config is not None and
-                               self._roi_config_changed(roi_config, self._last_roi_config) == False)
+            # ROI1缓存检查（原有逻辑）
+            roi1_time_valid = current_time - self._last_capture_time < self._cache_interval
+            roi1_config_unchanged = (self._last_roi_config is not None and
+                                   self._roi_config_changed(roi_config, self._last_roi_config) == False)
 
-            if (self._cached_roi_data is not None and time_valid and config_unchanged):
-                self._logger.debug(f"Using cached dual ROI data (age: {current_time - self._last_capture_time:.3f}s)")
-                # 从缓存重建ROI2数据
+            # ROI2缓存检查（新增独立缓存逻辑）
+            roi2_cache_valid = self._is_roi2_cache_valid(roi_config, current_time)
+
+            # 如果ROI1和ROI2缓存都有效，直接返回缓存数据
+            if (self._cached_roi_data is not None and roi1_time_valid and roi1_config_unchanged and roi2_cache_valid):
                 roi1_data = self._cached_roi_data
-                roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data)
+                roi2_data = self._cached_roi2_data
+                self._logger.debug(f"Using cached dual ROI data (ROI1 age: {current_time - self._last_capture_time:.3f}s, "
+                                 f"ROI2 age: {current_time - self._last_roi2_capture_time:.3f}s)")
                 return roi1_data, roi2_data
+
+            # 如果只有ROI1缓存有效，需要重新提取ROI2
+            elif (self._cached_roi_data is not None and roi1_time_valid and roi1_config_unchanged):
+                self._logger.debug(f"Using cached ROI1, extracting ROI2 (ROI2 cache invalid)")
+                roi1_data = self._cached_roi_data
+                # 使用缓存ROI1数据重新提取ROI2
+                try:
+                    roi2_data = self._extract_roi2_from_roi1(roi_config, roi1_data, roi1_data.intersection)
+                    # 更新ROI2缓存
+                    self._update_roi2_cache(roi_config, roi2_data, current_time)
+                    return roi1_data, roi2_data
+                except Exception as e:
+                    self._logger.error(f"Failed to extract ROI2 from cached ROI1: {e}")
+                    return roi1_data, None
+
+            # 如果缓存都无效或配置变化，执行完整捕获
             else:
-                self._logger.debug(f"Forcing new dual ROI capture - time_valid: {time_valid}, config_unchanged: {config_unchanged}")
+                self._logger.debug(f"Performing full dual ROI capture - ROI1_valid: {roi1_time_valid}, "
+                                 f"ROI1_config_unchanged: {roi1_config_unchanged}, ROI2_valid: {roi2_cache_valid}")
 
             # 执行真实双ROI截图操作
             roi1_data, roi2_data = self._capture_dual_roi_internal(roi_config)
 
-            # 更新缓存和状态（仅缓存ROI1）
+            # 更新缓存和状态（ROI1和ROI2都缓存）
             if roi1_data is not None:
+                # 更新ROI1缓存（原有逻辑）
                 self._cached_roi_data = roi1_data
                 self._last_roi_config = roi_config
                 self._last_capture_time = current_time
+
+                # 更新ROI2缓存（新增逻辑）
+                if roi2_data is not None:
+                    self._update_roi2_cache(roi_config, roi2_data, current_time)
+
                 self._logger.debug("Dual ROI captured successfully (ROI1 gray=%.2f, ROI2 gray=%.2f)",
                                  roi1_data.gray_value, roi2_data.gray_value if roi2_data else 0.0)
 
@@ -419,17 +517,31 @@ class RoiCaptureService:
                 # 使用交点坐标
                 center_x = intersection_point.roi_x
                 center_y = intersection_point.roi_y
+                source = "intersection"
                 self._logger.debug(f"Using intersection point for ROI2: ROI({center_x}, {center_y})")
             elif self._intersection_cache_valid and self._last_intersection_point is not None:
                 # 使用缓存的交点坐标
                 center_x = self._last_intersection_point.roi_x
                 center_y = self._last_intersection_point.roi_y
+                source = "cached_intersection"
                 self._logger.debug(f"Using cached intersection point for ROI2: ROI({center_x}, {center_y})")
             else:
                 # Fallback: 使用ROI1中心点
                 center_x = roi1_config.width // 2
                 center_y = roi1_config.height // 2
+                source = "center"
                 self._logger.debug(f"Using ROI1 center for ROI2: ({center_x}, {center_y})")
+
+            # 应用坐标平滑机制，避免闪烁
+            smoothed_center_x, smoothed_center_y = self._smooth_roi2_coordinates(center_x, center_y)
+
+            # 记录平滑前后的差异（如果差异较大）
+            if abs(smoothed_center_x - center_x) > 2 or abs(smoothed_center_y - center_y) > 2:
+                self._logger.debug(f"ROI2 coordinates smoothed: ({center_x}, {center_y}) -> ({smoothed_center_x}, {smoothed_center_y}), source: {source}")
+
+            # 使用平滑后的坐标
+            center_x = smoothed_center_x
+            center_y = smoothed_center_y
 
             # ROI2的起始和结束坐标（在ROI1内）
             roi2_x1 = center_x - half_size
@@ -518,6 +630,11 @@ class RoiCaptureService:
 
             self._logger.debug("ROI2 extracted from original ROI1 image: size=%dx%d, gray_value=%.2f, non_zero_ratio=%.2f%%",
                              roi2_size, roi2_size, average_gray, (non_zero_pixels/total_pixels)*100)
+
+            # ROI2状态监控日志
+            self._logger.info(f"ROI2 Status - Position: ROI({center_x}, {center_y}) -> Screen({roi1_config.x1 + center_x}, {roi1_config.y1 + center_y}), "
+                             f"Quality: {average_gray:.1f}, Cache: {'Valid' if self._roi2_cache_valid else 'Invalid'}, "
+                             f"Source: {source if 'source' in locals() else 'unknown'}")
 
             return roi2_data
 
