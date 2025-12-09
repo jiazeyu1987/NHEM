@@ -31,14 +31,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _setup_import_paths() -> None:
-    """Ensure we can import peak_detection and green_detector from this script."""
-    backend_app_dir = os.path.join(BASE_DIR, "backend", "app")
-    roi_detector_dir = os.path.join(BASE_DIR, "doc", "ROI")
+    """
+    Ensure we can import local peak_detection and green_detector modules.
 
-    if backend_app_dir not in sys.path:
-        sys.path.append(backend_app_dir)
-    if roi_detector_dir not in sys.path:
-        sys.path.append(roi_detector_dir)
+    All required files (simple_roi_daemon.py, peak_detection.py, green_detector.py,
+    simple_fem_config.json) are expected to be in the same SimpleFEM directory.
+    """
+    if BASE_DIR not in sys.path:
+        sys.path.append(BASE_DIR)
 
 
 _setup_import_paths()
@@ -78,7 +78,8 @@ def setup_peak_logger() -> logging.Logger:
 
     logger.setLevel(logging.INFO)
 
-    log_dir = os.path.join(BASE_DIR, "backend", "logs")
+    # Keep logs local to SimpleFEM project directory
+    log_dir = os.path.join(BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "roi_peak_daemon.log")
 
