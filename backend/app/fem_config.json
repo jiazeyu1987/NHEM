@@ -15,6 +15,7 @@
     "save_roi1": true,
     "save_roi2": true,
     "save_wave": true,
+    "only_delect": true,
     "max_frame_count": 10000
   },
   "roi_capture": {

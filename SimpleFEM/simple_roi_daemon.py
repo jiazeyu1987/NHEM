@@ -48,8 +48,8 @@ from green_detector import detect_green_intersection  # type: ignore  # noqa: E4
 
 
 def load_fem_config() -> Dict:
-    """Load fem_config.json from backend/app."""
-    config_path = os.path.join(BASE_DIR, "backend", "app", "fem_config.json")
+    """Load simple_fem_config.json from backend/app (only fields needed by this script)."""
+    config_path = os.path.join(BASE_DIR,  "simple_fem_config.json")
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -184,6 +184,8 @@ def run_daemon() -> None:
     save_roi1 = bool(data_processing.get("save_roi1", False))
     save_roi2 = bool(data_processing.get("save_roi2", False))
     save_wave = bool(data_processing.get("save_wave", False))
+    # only_delect == True: save ROI1/ROI2/wave only when peaks are detected
+    only_delect = bool(data_processing.get("only_delect", False))
 
     peak_conf = config.get("peak_detection", {})
     threshold = float(peak_conf.get("threshold", 105.0))
@@ -244,15 +246,6 @@ def run_daemon() -> None:
             roi1_image = screen.crop((x1, y1, x2, y2))
             roi1_width, roi1_height = roi1_image.size
 
-            # Optionally save ROI1 image
-            if save_roi1:
-                roi1_path = os.path.join(roi1_dir, f"roi1_{frame_index:06d}.png")
-                try:
-                    roi1_image.save(roi1_path)
-                except Exception:
-                    # Ignore individual save errors to keep daemon running
-                    pass
-
             # 3. Detect green line intersection in ROI1
             roi_cv_image = cv2.cvtColor(
                 np.array(roi1_image),
@@ -289,14 +282,6 @@ def run_daemon() -> None:
                 roi2_image = roi1_image.crop((rx1, ry1, rx2, ry2))
                 roi2_gray = compute_average_gray(roi2_image)
                 gray_buffer.append(roi2_gray)
-
-                # Optionally save ROI2 image (align index with ROI1 saves)
-                if save_roi2 and frame_index > 0:
-                    roi2_path = os.path.join(roi2_dir, f"roi2_{frame_index:06d}.png")
-                    try:
-                        roi2_image.save(roi2_path)
-                    except Exception:
-                        pass
 
             # 5. Run peak detection on current gray buffer
             green_peaks: List[Tuple[int, int]] = []
@@ -337,8 +322,29 @@ def run_daemon() -> None:
                 f"{roi2_gray:.1f}" if roi2_gray is not None else "nan"
             )
 
+            # Decide whether to save images/wave for this frame
+            has_peak = (green_count > 0) or (red_count > 0)
+            should_save = (not only_delect) or has_peak
+
+            # Optionally save ROI1 image
+            if should_save and save_roi1:
+                roi1_path = os.path.join(roi1_dir, f"roi1_{frame_index:06d}.png")
+                try:
+                    roi1_image.save(roi1_path)
+                except Exception:
+                    # Ignore individual save errors to keep daemon running
+                    pass
+
+            # Optionally save ROI2 image (align index with ROI1 saves)
+            if should_save and save_roi2 and roi2_image is not None:
+                roi2_path = os.path.join(roi2_dir, f"roi2_{frame_index:06d}.png")
+                try:
+                    roi2_image.save(roi2_path)
+                except Exception:
+                    pass
+
             # Save wave plot (curve before detection, but annotated with detection result)
-            if save_wave and gray_buffer:
+            if should_save and save_wave and gray_buffer:
                 try:
                     wave_path = os.path.join(
                         wave_dir,
@@ -371,11 +377,15 @@ def run_daemon() -> None:
                     # Ignore individual plotting/saving errors
                     pass
 
-            log_line = (
-                f"{ts} gray={gray_str} "
-                f"green_peaks={green_count} red_peaks={red_count} "
-                f"last_green={last_green_repr}"
-            )
+            # Build log line; when only_delect is True, only log frames with peaks
+            if (not only_delect) or has_peak:
+                log_line = (
+                    f"{ts} gray={gray_str} "
+                    f"green_peaks={green_count} red_peaks={red_count} "
+                    f"last_green={last_green_repr}"
+                )
+            else:
+                log_line = None
         except KeyboardInterrupt:
             logger.info(f"{ts} INFO=daemon_stopped_by_user")
             break

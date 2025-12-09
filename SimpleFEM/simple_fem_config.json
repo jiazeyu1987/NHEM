@@ -1,0 +1,32 @@
+{
+  "data_processing": {
+    "save_roi1": true,
+    "save_roi2": true,
+    "save_wave": true,
+    "only_delect": true
+  },
+  "roi_capture": {
+    "frame_rate": 10,
+    "default_config": {
+      "x1": 1280,
+      "y1": 80,
+      "x2": 1920,
+      "y2": 980
+    },
+    "roi2_config": {
+      "extension_params": {
+        "left": 20,
+        "right": 30,
+        "top": 60,
+        "bottom": 20
+      }
+    }
+  },
+  "peak_detection": {
+    "threshold": 90.0,
+    "margin_frames": 5,
+    "difference_threshold": 1.1,
+    "min_region_length": 5
+  }
+}
+
