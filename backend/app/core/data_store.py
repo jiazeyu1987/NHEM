@@ -319,6 +319,16 @@ class DataStore:
 
             return actual_fps, len(self._roi_frames)
 
+    def get_frame_count(self) -> int:
+        """获取当前帧计数"""
+        with self._lock:
+            return self._frame_count
+
+    def get_baseline(self) -> float:
+        """获取当前基线值"""
+        with self._lock:
+            return self._baseline
+
     def reset_roi_history(self) -> None:
         """重置ROI历史数据"""
         with self._lock:

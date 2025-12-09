@@ -12,6 +12,9 @@
   "data_processing": {
     "fps": 45,
     "buffer_size": 100,
+    "save_roi1": true,
+    "save_roi2": true,
+    "save_wave": true,
     "max_frame_count": 10000
   },
   "roi_capture": {
@@ -32,7 +35,7 @@
       "extension_params": {
         "left": 20,
         "right": 30,
-        "top": 120,
+        "top": 60,
         "bottom": 20
       },
       "size_constraints": {

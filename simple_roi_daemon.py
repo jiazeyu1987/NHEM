@@ -1,0 +1,387 @@
+"""
+Simple ROI daemon:
+ - Every second, capture ROI1 from screen using PIL.ImageGrab
+ - Detect green line intersection inside ROI1 using existing green_detector
+ - Around the latest intersection point, extract ROI2 according to roi2_config.extension_params
+ - Compute ROI2 average gray value and push into a fixed-length buffer (length 500)
+ - Run peak detection using backend.app.peak_detection.detect_peaks with fem_config parameters
+ - Log per-second summary to a daily-rotating log file (backend/logs/roi_peak_daemon.log)
+
+Usage:
+    python simple_roi_daemon.py
+"""
+
+import json
+import logging
+import logging.handlers
+import os
+import sys
+import time
+from collections import deque
+from datetime import datetime
+from typing import Deque, Dict, List, Optional, Tuple
+
+import numpy as np
+from PIL import Image, ImageGrab
+import cv2
+import matplotlib.pyplot as plt
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _setup_import_paths() -> None:
+    """Ensure we can import peak_detection and green_detector from this script."""
+    backend_app_dir = os.path.join(BASE_DIR, "backend", "app")
+    roi_detector_dir = os.path.join(BASE_DIR, "doc", "ROI")
+
+    if backend_app_dir not in sys.path:
+        sys.path.append(backend_app_dir)
+    if roi_detector_dir not in sys.path:
+        sys.path.append(roi_detector_dir)
+
+
+_setup_import_paths()
+
+from peak_detection import detect_peaks  # type: ignore  # noqa: E402
+from green_detector import detect_green_intersection  # type: ignore  # noqa: E402
+
+
+def load_fem_config() -> Dict:
+    """Load fem_config.json from backend/app."""
+    config_path = os.path.join(BASE_DIR, "backend", "app", "fem_config.json")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def compute_average_gray(image: Image.Image) -> float:
+    """Compute average gray value (0-255) of a PIL image."""
+    gray = image.convert("L")
+    histogram = gray.histogram()
+    width, height = gray.size
+    total_pixels = width * height
+    if total_pixels <= 0:
+        return 0.0
+
+    total_sum = 0
+    for value, count in enumerate(histogram):
+        if count:
+            total_sum += value * count
+    return float(total_sum / total_pixels)
+
+
+def setup_peak_logger() -> logging.Logger:
+    """Create a logger that writes plain text lines and rotates daily."""
+    logger = logging.getLogger("roi_peak_daemon")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+
+    log_dir = os.path.join(BASE_DIR, "backend", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "roi_peak_daemon.log")
+
+    handler = logging.handlers.TimedRotatingFileHandler(
+        log_path,
+        when="midnight",
+        interval=1,
+        backupCount=7,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+
+    return logger
+
+
+def adjust_roi1_to_screen(
+    screen_size: Tuple[int, int],
+    roi_default: Dict[str, int],
+) -> Tuple[int, int, int, int]:
+    """
+    Ensure ROI1 coordinates stay inside screen bounds.
+    Mirrors the safety checks used in RoiCaptureService.
+    """
+    screen_width, screen_height = screen_size
+    x1 = roi_default.get("x1", 0)
+    y1 = roi_default.get("y1", 0)
+    x2 = roi_default.get("x2", screen_width)
+    y2 = roi_default.get("y2", screen_height)
+
+    if (
+        x2 > screen_width
+        or y2 > screen_height
+        or x1 < 0
+        or y1 < 0
+    ):
+        x1 = max(0, min(x1, screen_width - 1))
+        y1 = max(0, min(y1, screen_height - 1))
+        x2 = max(x1 + 1, min(x2, screen_width))
+        y2 = max(y1 + 1, min(y2, screen_height))
+
+    return x1, y1, x2, y2
+
+
+def compute_roi2_region(
+    roi1_size: Tuple[int, int],
+    center: Tuple[int, int],
+    extension_params: Dict[str, int],
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Compute ROI2 region inside ROI1 using extension_params around the given center.
+
+    center is in ROI1-local coordinates (0,0) at ROI1 top-left.
+    Returns (x1, y1, x2, y2) in ROI1-local coordinates, or None if invalid.
+    """
+    roi_width, roi_height = roi1_size
+    cx, cy = center
+
+    # Clamp center to ROI1 bounds for safety
+    cx = max(0, min(roi_width - 1, cx))
+    cy = max(0, min(roi_height - 1, cy))
+
+    left = int(extension_params.get("left", 0))
+    right = int(extension_params.get("right", 0))
+    top = int(extension_params.get("top", 0))
+    bottom = int(extension_params.get("bottom", 0))
+
+    x1 = cx - left
+    x2 = cx + right
+    y1 = cy - top
+    y2 = cy + bottom
+
+    # Clamp to ROI1 bounds
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(roi_width, x2)
+    y2 = min(roi_height, y2)
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    return x1, y1, x2, y2
+
+
+def run_daemon() -> None:
+    """
+    Main loop:
+      - capture ROI1
+      - detect/update line intersection
+      - extract ROI2
+      - update gray buffer and run peak detection
+      - log results every second
+    """
+    config = load_fem_config()
+
+    roi_default = config.get("roi_capture", {}).get("default_config", {})
+    roi2_config = config.get("roi_capture", {}).get("roi2_config", {})
+    extension_params = roi2_config.get("extension_params", {})
+
+    data_processing = config.get("data_processing", {})
+    save_roi1 = bool(data_processing.get("save_roi1", False))
+    save_roi2 = bool(data_processing.get("save_roi2", False))
+    save_wave = bool(data_processing.get("save_wave", False))
+
+    peak_conf = config.get("peak_detection", {})
+    threshold = float(peak_conf.get("threshold", 105.0))
+    margin_frames = int(peak_conf.get("margin_frames", 5))
+    diff_threshold = float(peak_conf.get("difference_threshold", 0.5))
+    min_region_length = int(peak_conf.get("min_region_length", 1))
+
+    logger = setup_peak_logger()
+    gray_buffer: Deque[float] = deque(maxlen=500)
+    last_intersection_roi: Optional[Tuple[int, int]] = None
+
+    # Prepare per-session image save directories if enabled
+    session_start = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_root = os.path.join(BASE_DIR, "tmp", session_start)
+    roi1_dir = os.path.join(tmp_root, "roi1")
+    roi2_dir = os.path.join(tmp_root, "roi2")
+    wave_dir = os.path.join(tmp_root, "wave")
+
+    if save_roi1 or save_roi2 or save_wave:
+        os.makedirs(tmp_root, exist_ok=True)
+    if save_roi1:
+        os.makedirs(roi1_dir, exist_ok=True)
+    if save_roi2:
+        os.makedirs(roi2_dir, exist_ok=True)
+    if save_wave:
+        os.makedirs(wave_dir, exist_ok=True)
+
+    frame_index = 0
+
+    interval_seconds = 1.0
+
+    while True:
+        loop_start = time.time()
+        ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        log_line: Optional[str] = None
+
+        try:
+            frame_index += 1
+
+            # 1. Capture full screen
+            screen = ImageGrab.grab()
+            screen_width, screen_height = screen.size
+
+            # 2. Get ROI1 region and crop
+            x1, y1, x2, y2 = adjust_roi1_to_screen(
+                (screen_width, screen_height),
+                roi_default,
+            )
+            roi1_image = screen.crop((x1, y1, x2, y2))
+            roi1_width, roi1_height = roi1_image.size
+
+            # Optionally save ROI1 image
+            if save_roi1:
+                roi1_path = os.path.join(roi1_dir, f"roi1_{frame_index:06d}.png")
+                try:
+                    roi1_image.save(roi1_path)
+                except Exception:
+                    # Ignore individual save errors to keep daemon running
+                    pass
+
+            # 3. Detect green line intersection in ROI1
+            roi_cv_image = cv2.cvtColor(
+                np.array(roi1_image),
+                cv2.COLOR_RGB2BGR,
+            )
+            try:
+                intersection = detect_green_intersection(roi_cv_image)
+            except Exception:
+                # Keep daemon running even if detection fails on this frame
+                intersection = None
+
+            if intersection is not None:
+                last_intersection_roi = intersection
+
+            # Fallback for very first frames: use ROI1 center if we never had a hit
+            if last_intersection_roi is not None:
+                center_x, center_y = last_intersection_roi
+            else:
+                center_x = roi1_width // 2
+                center_y = roi1_height // 2
+
+            # 4. Compute ROI2 region and crop
+            roi2_region = compute_roi2_region(
+                (roi1_width, roi1_height),
+                (center_x, center_y),
+                extension_params,
+            )
+
+            roi2_gray: Optional[float] = None
+            roi2_image: Optional[Image.Image] = None
+
+            if roi2_region is not None:
+                rx1, ry1, rx2, ry2 = roi2_region
+                roi2_image = roi1_image.crop((rx1, ry1, rx2, ry2))
+                roi2_gray = compute_average_gray(roi2_image)
+                gray_buffer.append(roi2_gray)
+
+                # Optionally save ROI2 image (align index with ROI1 saves)
+                if save_roi2 and frame_index > 0:
+                    roi2_path = os.path.join(roi2_dir, f"roi2_{frame_index:06d}.png")
+                    try:
+                        roi2_image.save(roi2_path)
+                    except Exception:
+                        pass
+
+            # 5. Run peak detection on current gray buffer
+            green_peaks: List[Tuple[int, int]] = []
+            red_peaks: List[Tuple[int, int]] = []
+
+            if gray_buffer:
+                curve = list(gray_buffer)
+                try:
+                    green_peaks_raw, red_peaks_raw = detect_peaks(
+                        curve,
+                        threshold=threshold,
+                        marginFrames=margin_frames,
+                        differenceThreshold=diff_threshold,
+                    )
+                except Exception:
+                    green_peaks_raw, red_peaks_raw = [], []
+
+                # Apply min_region_length filter
+                green_peaks = [
+                    (start, end)
+                    for (start, end) in green_peaks_raw
+                    if (end - start + 1) >= min_region_length
+                ]
+                red_peaks = [
+                    (start, end)
+                    for (start, end) in red_peaks_raw
+                    if (end - start + 1) >= min_region_length
+                ]
+
+            green_count = len(green_peaks)
+            red_count = len(red_peaks)
+            last_green = green_peaks[-1] if green_peaks else None
+            last_green_repr = (
+                f"[{last_green[0]},{last_green[1]}]" if last_green else "[]"
+            )
+
+            gray_str = (
+                f"{roi2_gray:.1f}" if roi2_gray is not None else "nan"
+            )
+
+            # Save wave plot (curve before detection, but annotated with detection result)
+            if save_wave and gray_buffer:
+                try:
+                    wave_path = os.path.join(
+                        wave_dir,
+                        f"wave_{frame_index:06d}.png",
+                    )
+
+                    fig, ax = plt.subplots(figsize=(8, 3))
+                    x = list(range(len(curve)))
+                    ax.plot(x, curve, color="black", linewidth=1)
+
+                    # Highlight green and red regions
+                    for start, end in green_peaks:
+                        xs = list(range(start, end + 1))
+                        ys = curve[start : end + 1]
+                        ax.plot(xs, ys, color="green", linewidth=2)
+
+                    for start, end in red_peaks:
+                        xs = list(range(start, end + 1))
+                        ys = curve[start : end + 1]
+                        ax.plot(xs, ys, color="red", linewidth=2)
+
+                    ax.set_xlabel("Frame index in buffer")
+                    ax.set_ylabel("Gray value")
+                    ax.set_title("ROI2 gray waveform with peaks")
+                    ax.grid(True, linestyle="--", alpha=0.3)
+                    fig.tight_layout()
+                    fig.savefig(wave_path)
+                    plt.close(fig)
+                except Exception:
+                    # Ignore individual plotting/saving errors
+                    pass
+
+            log_line = (
+                f"{ts} gray={gray_str} "
+                f"green_peaks={green_count} red_peaks={red_count} "
+                f"last_green={last_green_repr}"
+            )
+        except KeyboardInterrupt:
+            logger.info(f"{ts} INFO=daemon_stopped_by_user")
+            break
+        except Exception as e:
+            # Log unexpected error but keep daemon alive
+            log_line = f"{ts} ERROR={repr(e)}"
+
+        if log_line is not None:
+            logger.info(log_line)
+
+        # Maintain ~1-second interval between iterations
+        elapsed = time.time() - loop_start
+        sleep_time = max(0.0, interval_seconds - elapsed)
+        time.sleep(sleep_time)
+
+
+if __name__ == "__main__":
+    run_daemon()

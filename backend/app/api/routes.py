@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 import logging
+import numpy as np
 
 from fastapi import (
     APIRouter,
@@ -1439,8 +1440,17 @@ async def roi_window_capture(
             roi_index=roi_frame.index
         ))
 
-    # 构建ROI配置信息
-    roi_config = roi_frames[0].roi_config
+    # 构建ROI配置信息 - 使用实际ROI状态或默认值
+    roi_configured, actual_roi_config = data_store.get_roi_status()
+    if roi_configured and actual_roi_config:
+        roi_config = actual_roi_config
+    else:
+        # 创建默认的ROI配置对象
+        roi_config = type('RoiConfig', (), {
+            'x1': 0, 'y1': 0, 'x2': 200, 'y2': 150,
+            'width': 200, 'height': 150,
+            'center_x': 100, 'center_y': 75
+        })()
     roi_config_dict = {
         "x1": roi_config.x1,
         "y1": roi_config.y1,
@@ -1452,18 +1462,18 @@ async def roi_window_capture(
         "center_y": roi_config.center_y
     }
 
-    # 构建元数据
+    # 构建元数据 - 使用统一的数据源信息
     capture_metadata = {
-        "roi_start_frame": roi_start_frame,
-        "roi_end_frame": roi_end_frame,
-        "actual_roi_frame_count": len(roi_frames),
-        "main_frame_start": roi_frames[0].frame_count if roi_frames else 0,
-        "main_frame_end": roi_frames[-1].frame_count if roi_frames else 0,
-        "capture_duration": (roi_frames[-1].timestamp - roi_frames[0].timestamp).total_seconds() if len(roi_frames) > 1 else 0.0,
-        "current_roi_frame_count": roi_count,
+        "data_frame_start": start_frame,
+        "data_frame_end": end_frame,
+        "actual_frame_count": len(frames),
+        "capture_duration": (frames[-1].timestamp - frames[0].timestamp).total_seconds() if len(frames) > 1 else 0.0,
         "current_main_frame_count": current_main_frame_count,
-        "roi_buffer_size": roi_buffer_size,
-        "last_gray_value": last_gray_value
+        "data_buffer_size": buffer_size,
+        "current_value": current_value,
+        "baseline": baseline,
+        "data_source": "realtime_data_unified",  # 标记使用统一数据源
+        "timestamp_processing": "actual_timestamp_diff"  # 标记使用实际时间戳差值
     }
 
     # 获取ROI帧率信息
@@ -1513,96 +1523,90 @@ async def roi_window_capture_with_peaks(
         roi_capture_service.clear_cache()
         logger.info("🔄 ROI cache cleared due to force_refresh=True")
 
-    # 尝试从数据存储中获取指定数量的ROI历史帧
-    roi_frames = data_store.get_roi_series(count)
+    # 统一使用与主图表相同的数据源，确保波形一致性
+    frames = data_store.get_series(count)
 
-    # 如果没有历史数据，生成实时模拟数据（像前端一样）
-    if not roi_frames:
-        logger.warning("No ROI data available, generating real-time simulation data")
-        import time
-        import random
+    # 如果没有历史数据，返回空状态而不是复杂的模拟数据
+    if not frames:
+        logger.warning("No realtime data available for ROI window capture")
+        logger.info("系统暂无实时数据，请先启动检测")
+        return RoiWindowCaptureWithPeaksResponse(
+            timestamp=datetime.utcnow(),
+            window_size=count,
+            roi_frame_range=(0, 0),
+            main_frame_range=(0, 0),
+            series=[],  # 返回空序列而不是模拟数据
+            roi_config={
+                "x1": 0, "y1": 0, "x2": 0, "y2": 0,
+                "width": 0, "height": 0,
+                "center_x": 0, "center_y": 0
+            },
+            capture_metadata={
+                "roi_start_frame": 0,
+                "roi_end_frame": 0,
+                "actual_roi_frame_count": 0,
+                "main_frame_start": 0,
+                "main_frame_end": 0,
+                "capture_duration": 0.0,
+                "current_roi_frame_count": 0,
+                "current_main_frame_count": data_store.get_frame_count(),
+                "roi_buffer_size": 0,
+                "last_gray_value": 0.0,
+                "actual_roi_fps": 0.0,
+                "available_roi_frames": 0,
+                "data_source": "no_realtime_data"
+            },
+            peak_detection_results={
+                "green_peaks": [],
+                "red_peaks": [],
+                "total_peaks": 0,
+                "green_peak_count": 0,
+                "red_peak_count": 0
+            },
+            peak_detection_params={
+                "threshold": threshold,
+                "margin_frames": margin_frames,
+                "difference_threshold": difference_threshold,
+                "data_points": 0
+            }
+        )
 
-        # 生成实时模拟ROI数据，每次都不同
-        current_time = time.time()
-        roi_frames = []
-
-        # 为每次请求生成唯一的参数，确保曲线变化
-        phase_shift = current_time * 0.5  # 基于时间的相位偏移
-        freq_variation = 0.3 + 0.2 * np.sin(current_time * 0.1)  # 频率变化
-        amplitude_modulation = 1.0 + 0.3 * np.cos(current_time * 0.07)  # 幅度调制
-        trend_slope = 0.1 * np.sin(current_time * 0.03)  # 慢变化趋势
-
-        for i in range(count):
-            # 基础灰度值加上变化
-            base_gray = 35.77
-            variation = 132.12  # 大的变化范围，确保有明显的曲线变化
-
-            # 添加正弦波动和噪声，多重频率成分使曲线更复杂
-            t = i * 0.0167  # 每帧16.7ms
-
-            # 主频率成分
-            primary_wave = np.sin(t * 2 * freq_variation + phase_shift)
-            # 次频率成分，增加复杂性
-            secondary_wave = 0.3 * np.sin(t * 7.3 + phase_shift * 1.5)
-            # 第三频率成分，细微变化
-            tertiary_wave = 0.15 * np.cos(t * 13.7 - phase_shift * 0.8)
-
-            # 组合所有波形
-            wave_component = primary_wave + secondary_wave + tertiary_wave
-
-            # 添加趋势变化
-            trend_component = trend_slope * i / count
-
-            # 计算最终灰度值
-            gray_value = (base_gray +
-                         variation * (0.5 + 0.5 * wave_component) * amplitude_modulation +
-                         trend_component * 10 +  # 趋势变化放大
-                         random.gauss(0, 8))  # 增加噪声强度
-
-            gray_value = max(20, min(180, gray_value))  # 限制在合理范围内
-
-            # 创建模拟ROI帧
-            roi_frame = type('RoiFrame', (), {
-                'gray_value': gray_value,
-                'index': i,
-                'timestamp': datetime.fromtimestamp(current_time + i * 0.0167),
-                'roi_config': type('RoiConfig', (), {
-                    'x1': 0, 'y1': 0, 'x2': 200, 'y2': 150,
-                    'width': 200, 'height': 150,
-                    'center_x': 100, 'center_y': 75
-                })(),
-                'frame_count': 1000 + i  # 模拟主帧计数
-            })()
-
-            roi_frames.append(roi_frame)
-
-        logger.info(f"Generated {len(roi_frames)} real-time simulation ROI frames")
+    logger.info(f"Successfully retrieved {len(frames)} realtime frames for ROI window capture")
 
     # 获取当前状态信息
-    _, current_main_frame_count, _, _, _, _ = data_store.get_status_snapshot()
+    system_status, current_main_frame_count, current_value, peak_signal, buffer_size, baseline = data_store.get_status_snapshot()
     roi_count, roi_buffer_size, last_gray_value, last_main_frame_count = data_store.get_roi_status_snapshot()
 
     # 计算帧范围
-    roi_start_frame = max(0, roi_count - len(roi_frames))
-    roi_end_frame = roi_count - 1
+    start_frame = frames[0].index if frames else 0
+    end_frame = frames[-1].index if frames else 0
 
-    # 转换为RoiTimeSeriesPoint格式
+    # 转换为时间序列格式，使用与主图表相同的时间戳处理逻辑
     series = []
     gray_values = []  # 用于波峰检测的灰度值列表
-    # 使用固定帧间隔生成线性时间序列，避免实际时间戳差值过小的问题
-    # ROI帧率约等于主系统帧率(60fps)，所以每帧间隔约为1/60=0.0167秒
-    frame_interval = 1.0 / 60.0  # 约16.7ms每帧
 
-    for i, roi_frame in enumerate(roi_frames):
-        gray_values.append(roi_frame.gray_value)
+    # 统一使用实际时间戳差值，与主图表处理逻辑保持一致
+    for frame in frames:
+        gray_values.append(frame.value)
+        # 使用与主图表相同的时间戳计算方法
+        relative_time = (frame.timestamp - frames[0].timestamp).total_seconds()
         series.append(RoiTimeSeriesPoint(
-            t=i * frame_interval,  # 使用基于帧索引的线性时间序列
-            gray_value=roi_frame.gray_value,
-            roi_index=roi_frame.index
+            t=relative_time,  # 使用实际时间戳差值
+            gray_value=frame.value,  # 使用与主图表相同的value字段
+            roi_index=frame.index
         ))
 
-    # 构建ROI配置信息
-    roi_config = roi_frames[0].roi_config
+    # 构建ROI配置信息 - 使用实际ROI状态或默认值
+    roi_configured, actual_roi_config = data_store.get_roi_status()
+    if roi_configured and actual_roi_config:
+        roi_config = actual_roi_config
+    else:
+        # 创建默认的ROI配置对象
+        roi_config = type('RoiConfig', (), {
+            'x1': 0, 'y1': 0, 'x2': 200, 'y2': 150,
+            'width': 200, 'height': 150,
+            'center_x': 100, 'center_y': 75
+        })()
     roi_config_dict = {
         "x1": roi_config.x1,
         "y1": roi_config.y1,
@@ -1614,18 +1618,18 @@ async def roi_window_capture_with_peaks(
         "center_y": roi_config.center_y
     }
 
-    # 构建元数据
+    # 构建元数据 - 使用统一的数据源信息
     capture_metadata = {
-        "roi_start_frame": roi_start_frame,
-        "roi_end_frame": roi_end_frame,
-        "actual_roi_frame_count": len(roi_frames),
-        "main_frame_start": roi_frames[0].frame_count if roi_frames else 0,
-        "main_frame_end": roi_frames[-1].frame_count if roi_frames else 0,
-        "capture_duration": (roi_frames[-1].timestamp - roi_frames[0].timestamp).total_seconds() if len(roi_frames) > 1 else 0.0,
-        "current_roi_frame_count": roi_count,
+        "data_frame_start": start_frame,
+        "data_frame_end": end_frame,
+        "actual_frame_count": len(frames),
+        "capture_duration": (frames[-1].timestamp - frames[0].timestamp).total_seconds() if len(frames) > 1 else 0.0,
         "current_main_frame_count": current_main_frame_count,
-        "roi_buffer_size": roi_buffer_size,
-        "last_gray_value": last_gray_value
+        "data_buffer_size": buffer_size,
+        "current_value": current_value,
+        "baseline": baseline,
+        "data_source": "realtime_data_unified",  # 标记使用统一数据源
+        "timestamp_processing": "actual_timestamp_diff"  # 标记使用实际时间戳差值
     }
 
     # 获取ROI帧率信息
@@ -1679,16 +1683,16 @@ async def roi_window_capture_with_peaks(
         peak_detection_results = {"error": str(e)}
         peak_detection_params = {"error": True}
 
-    logger.info("✅ ROI window capture with peaks successful: frames=%d, roi_range=(%d,%d), main_range=(%d,%d), duration=%.3fs",
-               len(series), roi_start_frame, roi_end_frame,
-               capture_metadata["main_frame_start"], capture_metadata["main_frame_end"],
-               capture_metadata["capture_duration"])
+    logger.info("✅ ROI window capture with peaks successful: frames=%d, data_range=(%d,%d), duration=%.3fs, data_source=%s",
+               len(series), start_frame, end_frame,
+               capture_metadata["capture_duration"],
+               capture_metadata["data_source"])
 
     return RoiWindowCaptureWithPeaksResponse(
         timestamp=datetime.utcnow(),
         window_size=count,
-        roi_frame_range=(roi_start_frame, roi_end_frame),
-        main_frame_range=(capture_metadata["main_frame_start"], capture_metadata["main_frame_end"]),
+        roi_frame_range=(start_frame, end_frame),
+        main_frame_range=(start_frame, end_frame),
         series=series,
         roi_config=roi_config_dict,
         capture_metadata=capture_metadata,

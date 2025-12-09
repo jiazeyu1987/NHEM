@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 import threading
 import time
 import tkinter as tk
@@ -104,6 +105,26 @@ class HTTPRealtimeClient:
             return None
         except Exception as e:
             logger.error(f"Failed to get dual ROI data: {e}")
+            return None
+
+    def get_realtime_data_batch(self, count: int = 100) -> Optional[Dict[str, Any]]:
+        """获取批量实时数据"""
+        try:
+            url = f"{self.base_url}/data/realtime?count={count}"
+            logger.info(f"请求实时数据批量API: {url}")
+
+            response = self.session.get(url, timeout=10)
+            logger.info(f"API响应状态码: {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"成功获取响应数据，类型: {type(data)}")
+                return data
+            else:
+                logger.error(f"API请求失败，状态码: {response.status_code}, 响应: {response.text[:200]}")
+                return None
+        except Exception as e:
+            logger.error(f"获取批量实时数据失败: {e}")
             return None
 
     def send_control_command(self, command: str) -> Optional[Dict[str, Any]]:
@@ -233,15 +254,23 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.normal_geometry = "1200x800"
         self.compact_geometry = "900x500"
 
+        # 窗口置顶状态
+        self.always_on_top = False
+        self.config_file = "http_client_ui_config.json"
+
         # UI组件引用
         self.conn_frame = None
         self.info_frame = None
         self.btn_clear = None
         self.btn_save = None
         self.btn_capture = None
+        self.btn_topmost = None  # 置顶按钮引用
 
         # ROI图像缓存
         self._last_image = None
+
+        # 加载UI配置
+        self._load_ui_config()
 
         # 构建UI
         self._build_widgets()
@@ -249,6 +278,9 @@ class HTTPRealtimeClientUI(tk.Tk):
 
         # 绑定关闭事件
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+        # 绑定快捷键 Ctrl+T 用于切换置顶
+        self.bind('<Control-t>', lambda e: self._toggle_topmost())
 
         # 启动状态更新循环
         self._start_status_update()
@@ -289,6 +321,10 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.btn_stop = ttk.Button(control_frame, text="停止检测", command=self._stop_detection, state="disabled")
         self.btn_stop.pack(side="left", padx=8, pady=4)
 
+        # 置顶按钮
+        self.btn_topmost = ttk.Button(control_frame, text="置顶", command=self._toggle_topmost)
+        self.btn_topmost.pack(side="right", padx=8, pady=4)
+
         # UI模式切换按钮
         self.btn_ui_toggle = ttk.Button(control_frame, text="缩小", command=self._toggle_ui_mode)
         self.btn_ui_toggle.pack(side="right", padx=8, pady=4)
@@ -300,7 +336,7 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.btn_save = ttk.Button(control_frame, text="保存截图", command=self._save_screenshot, state="disabled")
         self.btn_save.pack(side="left", padx=8, pady=4)
 
-        self.btn_capture = ttk.Button(control_frame, text="截取曲线", command=self._capture_curve, state="disabled")
+        self.btn_capture = ttk.Button(control_frame, text="显示最新100个点", command=self._capture_curve, state="disabled")
         self.btn_capture.pack(side="left", padx=8, pady=4)
 
         # 主框架 - 左侧信息，右侧图表
@@ -334,6 +370,10 @@ class HTTPRealtimeClientUI(tk.Tk):
         ttk.Label(status_info, text="轮询状态:").grid(row=4, column=0, sticky="w", pady=2)
         self.polling_status_label = ttk.Label(status_info, text="未轮询")
         self.polling_status_label.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=2)
+
+        ttk.Label(status_info, text="窗口状态:").grid(row=5, column=0, sticky="w", pady=2)
+        self.window_status_label = ttk.Label(status_info, text="普通", foreground="gray")
+        self.window_status_label.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=2)
 
         # 分隔线
         ttk.Separator(self.info_frame, orient="horizontal").pack(fill="x", pady=8)
@@ -478,7 +518,7 @@ class HTTPRealtimeClientUI(tk.Tk):
         self.captured_wrapper.configure(height=300)  # 设置最小高度
 
         # 在Frame内部创建Label
-        self.captured_label = ttk.Label(self.captured_wrapper, text="No captured curve yet. Click '截取曲线' to capture data.",
+        self.captured_label = ttk.Label(self.captured_wrapper, text="暂无数据。点击'显示最新100个点'获取最新实时数据。",
                                       relief="sunken", background="white")
         self.captured_label.pack(fill="both", expand=True)
 
@@ -1104,214 +1144,213 @@ class HTTPRealtimeClientUI(tk.Tk):
                     captured_data = data.get("series", [])
                     peak_results = data.get("peak_detection_results", {})
 
-                    # 将波峰数据转换为客户端期望的格式
-                    peaks = []
-                    green_peaks = peak_results.get("green_peaks", [])
-                    red_peaks = peak_results.get("red_peaks", [])
-
-                    # 转换波峰数据格式
-                    for peak_info in green_peaks:
-                        if len(peak_info) >= 2 and peak_info[0] < len(captured_data):
-                            peaks.append({
-                                't': captured_data[peak_info[0]]['t'],
-                                'value': captured_data[peak_info[0]]['gray_value'],
-                                'peak_color': 'green'
-                            })
-
-                    for peak_info in red_peaks:
-                        if len(peak_info) >= 2 and peak_info[0] < len(captured_data):
-                            peaks.append({
-                                't': captured_data[peak_info[0]]['t'],
-                                'value': captured_data[peak_info[0]]['gray_value'],
-                                'peak_color': 'red'
-                            })
-
-                    if captured_data:
-                        # 添加调试信息验证修复效果
-                        times = [point.get("t", 0) for point in captured_data]
-                        values = [point.get("gray_value", point.get("value", 0)) for point in captured_data]
-
-                        if times and values:
-                            time_range = max(times) - min(times) if len(times) > 1 else 0
-                            value_range = max(values) - min(values) if len(values) > 1 else 0
-                            self._log(f"DEBUG: Time range: {time_range:.3f}s, Value range: {value_range:.2f}")
-                            self._log(f"DEBUG: Time span: [{min(times):.3f}, {max(times):.3f}], Value span: [{min(values):.2f}, {max(values):.2f}]")
-
-                        self._log(f"Curve capture successful! Got {len(captured_data)} data points with {len(peaks)} peaks")
-                        self._display_captured_curve(captured_data, peaks, peak_results)
-
-                        # 更新截取信息
-                        self.captured_count_label.config(text=str(len(captured_data)))
-                        self.captured_source_label.config(text="ROI数据")
-
-                        # 启用清除按钮
-                        self.btn_clear_capture.config(state="normal")
-
-                        # 成功日志记录（不显示弹框）
-                        self._log(f"✅ 曲线截取成功！数据点数: {len(captured_data)}, 波峰数: {len(peaks)}")
+                # 尝试不同的数据结构
+                if isinstance(data, dict):
+                    if "success" in data and data.get("success"):
+                        # 带success字段的格式
+                        series_data = data.get("series", [])
+                        self._log("DEBUG: 使用带success字段的数据格式")
+                    elif "series" in data:
+                        # 直接包含series字段的格式
+                        series_data = data.get("series", [])
+                        self._log("DEBUG: 使用直接series格式")
+                    elif isinstance(data, list):
+                        # 直接是数组格式
+                        series_data = data
+                        self._log("DEBUG: 使用数组格式")
                     else:
-                        raise Exception("No captured data received")
+                        self._log(f"DEBUG: 未知的数据结构: {list(data.keys())}")
+                elif isinstance(data, list):
+                    series_data = data
+                    self._log("DEBUG: 数据本身就是数组格式")
+
+                if series_data and len(series_data) > 0:
+                    self._log(f"DEBUG: 成功获取series_data，长度: {len(series_data)}")
+
+                    # 转换数据格式，适配显示函数
+                    captured_data = []
+
+                    # 获取当前时间戳，用于计算相对时间（与主图表保持一致）
+                    import datetime
+                    import time
+                    current_timestamp = datetime.datetime.utcnow()
+
+                    for i, point in enumerate(series_data):
+                        if isinstance(point, dict):
+                            # 尝试不同的字段名
+                            value = point.get("value") or point.get("gray_value") or point.get("v") or 0
+                            timestamp = point.get("t", point.get("time", i * 0.05))
+
+                            # 使用后端返回的实际时间戳，确保与主图表一致
+                            relative_time = float(timestamp)
+
+                            captured_data.append({
+                                't': relative_time,
+                                'gray_value': float(value)
+                            })
+                        else:
+                            # 如果point不是字典，尝试直接转换
+                            # 保持向后兼容性，使用索引作为时间戳
+                            relative_time = float(i) * 0.05
+                            captured_data.append({
+                                't': relative_time,
+                                'gray_value': float(point) if point is not None else 0.0
+                            })
+
+                    self._log(f"DEBUG: 转换后的captured_data长度: {len(captured_data)}")
+                    if len(captured_data) > 0:
+                        first_point = captured_data[0]
+                        last_point = captured_data[-1]
+                        self._log(f"DEBUG: 第一个数据点: {first_point}")
+                        self._log(f"DEBUG: 最后一个数据点: {last_point}")
+                        self._log(f"DEBUG: 时间范围: 0 - {last_point['t']:.2f}秒")
+
+                        # 验证时间间隔一致性
+                        if len(captured_data) > 1:
+                            time_diff = captured_data[1]['t'] - captured_data[0]['t']
+                            self._log(f"DEBUG: 时间间隔: {time_diff:.3f}秒 (应该为0.05秒)")
+
+                        # 记录数值范围
+                        values = [p['gray_value'] for p in captured_data]
+                        value_range = max(values) - min(values) if len(values) > 1 else 0
+                        self._log(f"DEBUG: 数值范围: {value_range:.2f} ({min(values):.1f} - {max(values):.1f})")
+
+                    # 添加调试信息
+                    times = [point.get("t", 0) for point in captured_data]
+                    values = [point.get("gray_value", 0) for point in captured_data]
+
+                    if times and values:
+                        time_range = max(times) - min(times) if len(times) > 1 else 0
+                        value_range = max(values) - min(values) if len(values) > 1 else 0
+                        self._log(f"DEBUG: 时间范围: {time_range:.3f}s, 数值范围: {value_range:.2f}")
+
+                    self._log(f"✅ 成功获取 {len(captured_data)} 个实时数据点")
+                    # 显示简单的时间序列曲线，无波峰标记
+                    self._display_captured_curve(captured_data, [])
+
+                    # 更新截取信息
+                    self.captured_count_label.config(text=str(len(captured_data)))
+                    self.captured_source_label.config(text="实时数据")
+
+                    # 启用清除按钮
+                    self.btn_clear_capture.config(state="normal")
+
+                    # 成功日志记录
+                    self._log(f"✅ 实时数据获取成功！数据点数: {len(captured_data)}")
                 else:
-                    raise Exception(data.get("error", "Unknown error"))
-            else:
-                raise Exception(f"Server error: {response.status_code}")
+                    self._log("DEBUG: series_data为空或长度为0")
+                    raise Exception(f"未接收到有效实时数据。数据结构: {type(data)}, 内容: {str(data)[:200]}")
 
         except Exception as e:
-            self._log(f"Curve capture failed: {str(e)}", "ERROR")
-            messagebox.showerror("截取失败", f"曲线截取失败: {str(e)}")
+            self._log(f"获取最新100个数据点失败: {str(e)}", "ERROR")
+            # 临时恢复错误对话框以便诊断
+            messagebox.showerror("获取失败", f"获取最新100个数据点失败: {str(e)}\n\n请检查：\n1. 服务器是否正常运行\n2. 检测是否已启动\n3. 网络连接是否正常\n\n详细信息已记录在日志中")
         finally:
-            self.btn_capture.config(state="normal", text="截取曲线")
+            self.btn_capture.config(state="normal", text="显示最新100个点")
 
     def _display_captured_curve(self, data_points, peaks, peak_results=None):
-        """显示截取的曲线"""
+        """显示最新实时数据点曲线"""
         try:
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             import numpy as np
 
-            # 首先清理之前的画布 - 修复第二次截取无法显示的关键问题
+            # 首先清理之前的画布
             self._clear_capture()
 
-            # 创建新图表 - 使用与主图表相同的大小
+            # 创建新图表
             fig, ax = plt.subplots(figsize=(12, 8), dpi=100)
             fig.patch.set_facecolor('white')
 
-            # 打印窗口大小信息
-            self._log(f"截取曲线图表尺寸信息:")
-            self._log(f"  - 图表尺寸: 12 x 8 英寸")
-            self._log(f"  - DPI设置: 100")
-            self._log(f"  - 像素尺寸: {fig.get_figwidth() * fig.dpi:.0f} x {fig.get_figheight() * fig.dpi:.0f} 像素")
-            self._log(f"  - 容器高度: 300 像素 (最小)")
-            self._log(f"  - 位置: 实时图表上方")
-
-            # 提取时间和数值 - 适配服务器返回的数据格式
+            # 提取时间和数值
             times = [point.get("t", 0) for point in data_points]
             values = [point.get("gray_value", point.get("value", 0)) for point in data_points]
 
-            self._log(f"DEBUG: Preparing to display curve with {len(times)} points")
-            self._log(f"DEBUG: Data validation - times count: {len(times)}, values count: {len(values)}")
+            self._log(f"DEBUG: 准备显示曲线，数据点数: {len(times)}")
 
             # 验证数据完整性
             if len(times) != len(values):
-                raise ValueError(f"Data length mismatch: {len(times)} times vs {len(values)} values")
+                raise ValueError(f"数据长度不匹配: {len(times)} 个时间点 vs {len(values)} 个数值点")
 
             if not times or not values:
-                raise ValueError("No valid data points to display")
+                raise ValueError("没有有效数据点可显示")
 
-            # 验证数据范围
-            if len(times) > 0 and len(values) > 0:
-                # 绘制曲线
-                ax.plot(times, values, 'b-', linewidth=2, label='Captured Signal')
+            # 绘制简单的时间序列曲线（与主图表保持一致的样式）
+            ax.plot(times, values, 'b-', linewidth=2, label='实时数据', alpha=0.8)
 
-                # 添加基于真实波峰检测的区间高亮
-                if peak_results and len(times) > 0:
-                    green_peaks = peak_results.get("green_peaks", [])
-                    red_peaks = peak_results.get("red_peaks", [])
+            # 设置Y轴范围与主图表一致（固定0-200）
+            ax.set_ylim(0, 200)
 
-                    self._log(f"DEBUG: Peak results - Green peaks: {len(green_peaks)}, Red peaks: {len(red_peaks)}")
+            # 绘制基线（与主图表保持一致的样式）
+            if values:
+                baseline = np.mean(values)
+                baseline_line = [baseline] * len(times)
+                ax.plot(times, baseline_line, 'r--', linewidth=1, alpha=0.6, label=f'基线={baseline:.1f}')
 
-                    # 绘制绿色波峰区间（稳定HEM事件）
-                    for i, (start_frame, end_frame) in enumerate(green_peaks):
-                        if start_frame < len(times) and end_frame < len(times):
-                            start_time = times[start_frame]
-                            end_time = times[end_frame]
-                            ax.axvspan(start_time, end_time, alpha=0.2, color='green',
-                                      label='Stable HEM' if i == 0 else None)
-                            self._log(f"DEBUG: Green peak {i+1}: frames {start_frame}-{end_frame}, time {start_time:.3f}-{end_time:.3f}")
+            # 设置图表属性（与主图表保持一致的样式）
+            ax.set_title("实时数据快照 (最新100个点)", fontsize=14, fontweight='bold')
+            ax.set_xlabel("时间 (seconds)")
+            ax.set_ylabel("Signal Value")
+            ax.grid(True, alpha=0.3)
 
-                    # 绘制红色波峰区间（不稳定HEM事件）
-                    for i, (start_frame, end_frame) in enumerate(red_peaks):
-                        if start_frame < len(times) and end_frame < len(times):
-                            start_time = times[start_frame]
-                            end_time = times[end_frame]
-                            ax.axvspan(start_time, end_time, alpha=0.2, color='red',
-                                      label='Unstable HEM' if i == 0 else None)
-                            self._log(f"DEBUG: Red peak {i+1}: frames {start_frame}-{end_frame}, time {start_time:.3f}-{end_time:.3f}")
+            # 自动调整坐标轴（基于实际时间戳范围）
+            if len(times) > 0:
+                min_time = min(times)
+                max_time = max(times)
+                time_range = max_time - min_time
 
-                # 强制设置Y轴范围，确保小的灰度变化能够清晰显示
-                min_val = min(values)
-                max_val = max(values)
-                value_range = max_val - min_val
-
-                if value_range < 10:  # 如果数据范围太小，强制扩展显示范围
-                    center = (min_val + max_val) / 2
-                    expanded_range = 5  # 至少显示5的范围
-                    ax.set_ylim(center - expanded_range/2, center + expanded_range/2)
+                if time_range <= 0:
+                    # 如果所有时间戳相同，显示固定范围
+                    ax.set_xlim(0, 10)
+                elif max_time <= 10:
+                    # 如果时间范围在10秒内，从0开始显示
+                    ax.set_xlim(0, max(10, max_time + 0.5))
                 else:
-                    # 否则使用正常范围并稍微扩展
-                    padding = value_range * 0.1
-                    ax.set_ylim(min_val - padding, max_val + padding)
+                    # 显示完整的时间范围加上一些边距
+                    margin = min(2.0, time_range * 0.1)  # 最多2秒边距
+                    ax.set_xlim(min_time - margin, max_time + margin)
 
-                # 绘制基线
-                if values:
-                    baseline = np.mean(values)
-                    baseline_line = [baseline] * len(times)
-                    ax.plot(times, baseline_line, 'r--', linewidth=1, alpha=0.6, label=f'Baseline={baseline:.1f}')
+                self._log(f"DEBUG: 时间轴设置: {min_time:.2f} - {max_time:.2f}s, 范围={time_range:.2f}s")
+            else:
+                ax.set_xlim(0, 10)
 
-                # 标记波峰
-                if peaks:
-                    peak_times = [peak.get("t", 0) for peak in peaks]
-                    peak_values = [peak.get("value", 0) for peak in peaks]
-                    peak_colors = []
+            # 添加图例
+            ax.legend(loc="upper right")
 
-                    # 根据波峰颜色分类
-                    for peak in peaks:
-                        if peak.get("peak_color") == "green":
-                            peak_colors.append('green')
-                        elif peak.get("peak_color") == "red":
-                            peak_colors.append('red')
-                        else:
-                            peak_colors.append('orange')
+            plt.tight_layout()
 
-                    # 绘制波峰点
-                    for i, (t, v, color) in enumerate(zip(peak_times, peak_values, peak_colors)):
-                        ax.scatter([t], [v], c=color, s=50, zorder=5)
+            # 清理标签内容并嵌入新的canvas
+            self.captured_label.config(text="")
 
-                ax.set_title("Captured Curve with Peak Detection", fontsize=12, fontweight='bold')
-                ax.set_xlabel("Time (seconds)")
-                ax.set_ylabel("Signal Value")
-                ax.grid(True, alpha=0.3)
-                ax.legend()
+            # 创建并嵌入canvas
+            self._log("DEBUG: 创建matplotlib canvas...")
+            canvas = FigureCanvasTkAgg(fig, master=self.captured_wrapper)
 
-                # 自动调整坐标轴
-                ax.set_xlim(min(times) - 0.1, max(times) + 0.1)
-                if values:
-                    ax.set_ylim(min(values) - 2, max(values) + 2)
+            # 验证canvas创建是否成功
+            if canvas is None:
+                raise RuntimeError("创建matplotlib canvas失败")
 
-                plt.tight_layout()
+            # 绘制图表
+            self._log("DEBUG: 绘制图表...")
+            canvas.draw()
 
-                # 清理标签内容并嵌入新的canvas
-                self.captured_label.config(text="")
+            # 获取widget并验证
+            widget = canvas.get_tk_widget()
+            if widget is None:
+                raise RuntimeError("从canvas获取tkinter widget失败")
 
-                # 创建并嵌入canvas - 添加验证
-                self._log("DEBUG: Creating FigureCanvasTkAgg...")
-                canvas = FigureCanvasTkAgg(fig, master=self.captured_wrapper)
+            # 嵌入widget
+            self._log("DEBUG: 嵌入canvas widget...")
+            widget.pack(fill='both', expand=True)
 
-                # 验证canvas创建是否成功
-                if canvas is None:
-                    raise RuntimeError("Failed to create matplotlib canvas")
+            # 验证widget是否正确嵌入
+            self.after(100, lambda: self._verify_canvas_display(canvas, fig))
 
-                # 绘制图表
-                self._log("DEBUG: Drawing canvas...")
-                canvas.draw()
+            # 保存引用
+            self.captured_canvas = canvas
+            self.captured_fig = fig
 
-                # 获取widget并验证
-                widget = canvas.get_tk_widget()
-                if widget is None:
-                    raise RuntimeError("Failed to get tkinter widget from canvas")
-
-                # 嵌入widget
-                self._log("DEBUG: Packing canvas widget...")
-                widget.pack(fill='both', expand=True)
-
-                # 验证widget是否正确嵌入
-                self.after(100, lambda: self._verify_canvas_display(canvas, fig))
-
-                # 保存引用
-                self.captured_canvas = canvas
-                self.captured_fig = fig
-
-                self._log(f"DEBUG: Canvas created and embedded successfully")
+            self._log(f"DEBUG: Canvas created and embedded successfully")
 
         except Exception as e:
             self._log(f"Error displaying captured curve: {str(e)}", "ERROR")
@@ -1385,7 +1424,7 @@ class HTTPRealtimeClientUI(tk.Tk):
                     self._log(f"DEBUG: Error destroying child widget: {e}")
 
             # 重置标签状态
-            self.captured_label.config(text="No captured curve yet. Click '截取曲线' to capture data.", image="")
+            self.captured_label.config(text="暂无数据。点击'显示最新100个点'获取最新实时数据。", image="")
             self.captured_label.image = None
 
             # 重置信息标签
@@ -1743,6 +1782,9 @@ class HTTPRealtimeClientUI(tk.Tk):
     def _on_closing(self):
         """窗口关闭事件"""
         try:
+            # 保存UI配置
+            self._save_ui_config()
+
             # 断开连接
             self._disconnect()
 
@@ -1756,6 +1798,73 @@ class HTTPRealtimeClientUI(tk.Tk):
         except Exception as e:
             print(f"Error during cleanup: {e}")
             self.destroy()
+
+    def _load_ui_config(self):
+        """加载UI配置"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+
+                # 加载置顶状态
+                if config.get('always_on_top', False):
+                    self.always_on_top = True
+                    # 延迟应用置顶设置，等窗口创建完成
+                    self.after(100, self._apply_topmost_config)
+
+                logger.info(f"UI配置已加载: {config}")
+        except Exception as e:
+            logger.warning(f"加载UI配置失败: {e}")
+
+    def _apply_topmost_config(self):
+        """应用置顶配置"""
+        if self.always_on_top:
+            self.attributes('-topmost', True)
+            # 更新UI状态（如果组件已创建）
+            if hasattr(self, 'btn_topmost') and self.btn_topmost:
+                self.btn_topmost.config(text="取消置顶")
+            if hasattr(self, 'window_status_label') and self.window_status_label:
+                self.window_status_label.config(text="置顶", foreground="red")
+            self.title("NHEM Python Client - HTTP + Real-time Plotting [置顶]")
+
+    def _save_ui_config(self):
+        """保存UI配置"""
+        try:
+            config = {
+                'always_on_top': self.always_on_top,
+                'compact_mode': self.compact_mode,
+                'normal_geometry': self.normal_geometry,
+                'compact_geometry': self.compact_geometry
+            }
+
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+
+            logger.info("UI配置已保存")
+        except Exception as e:
+            logger.warning(f"保存UI配置失败: {e}")
+
+    def _toggle_topmost(self):
+        """切换窗口置顶状态"""
+        self.always_on_top = not self.always_on_top
+
+        if self.always_on_top:
+            # 设置窗口置顶
+            self.attributes('-topmost', True)
+            self.btn_topmost.config(text="取消置顶")
+            self.window_status_label.config(text="置顶", foreground="red")
+            self.title("NHEM Python Client - HTTP + Real-time Plotting [置顶]")
+            logger.info("窗口设置为置顶")
+        else:
+            # 取消窗口置顶
+            self.attributes('-topmost', False)
+            self.btn_topmost.config(text="置顶")
+            self.window_status_label.config(text="普通", foreground="gray")
+            self.title("NHEM Python Client - HTTP + Real-time Plotting")
+            logger.info("窗口取消置顶")
+
+        # 保存配置
+        self._save_ui_config()
 
     def _toggle_ui_mode(self):
         """切换UI模式（紧凑/完整）"""
