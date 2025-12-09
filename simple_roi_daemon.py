@@ -3,7 +3,7 @@ Simple ROI daemon:
  - Every second, capture ROI1 from screen using PIL.ImageGrab
  - Detect green line intersection inside ROI1 using existing green_detector
  - Around the latest intersection point, extract ROI2 according to roi2_config.extension_params
- - Compute ROI2 average gray value and push into a fixed-length buffer (length 500)
+ - Compute ROI2 average gray value and push into a fixed-length buffer (length 100)
  - Run peak detection using backend.app.peak_detection.detect_peaks with fem_config parameters
  - Log per-second summary to a daily-rotating log file (backend/logs/roi_peak_daemon.log)
 
@@ -172,7 +172,7 @@ def run_daemon() -> None:
       - detect/update line intersection
       - extract ROI2
       - update gray buffer and run peak detection
-      - log results every second
+      - log results at configured frame_rate
     """
     config = load_fem_config()
 
@@ -192,7 +192,8 @@ def run_daemon() -> None:
     min_region_length = int(peak_conf.get("min_region_length", 1))
 
     logger = setup_peak_logger()
-    gray_buffer: Deque[float] = deque(maxlen=500)
+    # Store only the latest 100 gray values for waveform / peak detection
+    gray_buffer: Deque[float] = deque(maxlen=100)
     last_intersection_roi: Optional[Tuple[int, int]] = None
 
     # Prepare per-session image save directories if enabled
@@ -213,7 +214,15 @@ def run_daemon() -> None:
 
     frame_index = 0
 
-    interval_seconds = 1.0
+    # Use roi_capture.frame_rate as loop frequency
+    roi_frame_rate = config.get("roi_capture", {}).get("frame_rate", 1)
+    try:
+        roi_frame_rate = float(roi_frame_rate)
+    except Exception:
+        roi_frame_rate = 1.0
+    if roi_frame_rate <= 0:
+        roi_frame_rate = 1.0
+    interval_seconds = 1.0 / roi_frame_rate
 
     while True:
         loop_start = time.time()

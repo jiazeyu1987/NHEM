@@ -18,7 +18,7 @@
     "max_frame_count": 10000
   },
   "roi_capture": {
-    "frame_rate": 1,
+    "frame_rate": 10,
     "update_interval": 0.5,
     "default_config": {
       "x1": 1280,
@@ -48,7 +48,7 @@
     }
   },
   "peak_detection": {
-    "threshold": 104.0,
+    "threshold": 90.0,
     "margin_frames": 5,
     "difference_threshold": 1.1,
     "min_region_length": 5
