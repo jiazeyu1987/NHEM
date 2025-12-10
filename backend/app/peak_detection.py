@@ -317,11 +317,11 @@ def detect_peaks(
         - 红色波峰：[(start_frame, end_frame), ...] - 不稳定事件
     """
     # 打印传入的参数
-    print(f"DEBUG detect_peaks 调用参数:")
-    print(f"  curve: 长度={len(curve) if curve else 0}, 范围=[{min(curve):.1f}, {max(curve):.1f}]")
-    print(f"  threshold: {threshold}")
-    print(f"  marginFrames: {marginFrames}")
-    print(f"  differenceThreshold: {differenceThreshold}")
+    # print(f"DEBUG detect_peaks 调用参数:")
+    # print(f"  curve: 长度={len(curve) if curve else 0}, 范围=[{min(curve):.1f}, {max(curve):.1f}]")
+    # print(f"  threshold: {threshold}")
+    # print(f"  marginFrames: {marginFrames}")
+    # print(f"  differenceThreshold: {differenceThreshold}")
 
     if not curve:
         return [], []
@@ -331,29 +331,29 @@ def detect_peaks(
         curve, threshold, marginFrames, differenceThreshold
     )
 
-    print(f"调试信息:")
-    print(f"  绝对阈值法检测到 {len(threshold_peaks)} 个波峰:")
+    #print(f"调试信息:")
+    #print(f"  绝对阈值法检测到 {len(threshold_peaks)} 个波峰:")
     for i, (start, end, frame_diff) in enumerate(threshold_peaks):
         peak_val = max(curve[start:end+1])
-        print(f"    {i+1}: [{start}, {end}], 峰值: {peak_val:.1f}, frameDiff: {frame_diff:.2f}")
+        #print(f"    {i+1}: [{start}, {end}], 峰值: {peak_val:.1f}, frameDiff: {frame_diff:.2f}")
 
     # 按颜色分类波峰
     green_peaks = []
     red_peaks = []
-    print(f"  波峰颜色分类结果:")
+    #print(f"  波峰颜色分类结果:")
     for i, (start, end, frame_diff) in enumerate(threshold_peaks):
         color = classify_peak_color(frame_diff, differenceThreshold)
-        print(f"    波峰{i+1}: [{start}, {end}], frameDiff: {frame_diff:.2f}, 颜色: {color}")
+        #print(f"    波峰{i+1}: [{start}, {end}], frameDiff: {frame_diff:.2f}, 颜色: {color}")
 
         if color == 'green':
             green_peaks.append((start, end))
-            print(f"      [GREEN] 添加到绿色波峰列表")
+            #print(f"      [GREEN] 添加到绿色波峰列表")
         elif color == 'red':
             red_peaks.append((start, end))
-            print(f"      [RED] 添加到红色波峰列表")
+            #print(f"      [RED] 添加到红色波峰列表")
         else:
             red_peaks.append((start, end))  # 白色波峰归类到红色
-            print(f"      [RED->WHITE] 添加到红色波峰列表（白色归类）")
+            #print(f"      [RED->WHITE] 添加到红色波峰列表（白色归类）")
 
     return green_peaks, red_peaks
 

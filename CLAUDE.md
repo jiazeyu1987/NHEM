@@ -81,6 +81,23 @@ python test_error_handling.py           # Error handling robustness test
 python verify_memory_management.py      # Memory management and performance test
 ```
 
+### SimpleFEM Standalone Component
+```bash
+# Navigate to SimpleFEM directory
+cd SimpleFEM
+
+# Install PyInstaller (if not already installed)
+pip install pyinstaller
+
+# Build Windows executable
+powershell -File build_simple_fem_exe.ps1
+
+# Run the daemon (after build)
+python simple_roi_daemon.py
+# Or run the built executable
+dist\SimpleFEM_ROI_Daemon.exe
+```
+
 ## Architecture Overview
 
 ### Backend Architecture (`backend/`)
@@ -114,6 +131,12 @@ python verify_memory_management.py      # Memory management and performance test
 - **Line Detection State**: `line_detection_state.json` - Persistent line detection configuration (NEW)
 - **Local Config**: `local_config_loader.py` - Configuration management utilities
 - **Modular Line Detection**: Refactored from monolithic 4900+ line file into 15 focused modules in `line_detection/` package (NEW)
+
+### SimpleFEM Architecture (`SimpleFEM/`)
+- **ROI Daemon**: `simple_roi_daemon.py` - Standalone ROI capture and processing daemon
+- **Configuration**: `simple_fem_config.json` - Daemon-specific configuration settings
+- **Build Script**: `build_simple_fem_exe.ps1` - PyInstaller build script for Windows executable creation
+- **Output**: `dist/SimpleFEM_ROI_Daemon.exe` - Standalone executable with no Python dependencies
 
 ## Key Performance Characteristics
 
@@ -155,6 +178,12 @@ Client-specific configuration:
 - Server connection settings
 - ROI parameters
 - Peak detection settings
+
+### SimpleFEM Configuration (`SimpleFEM/simple_fem_config.json`)
+Daemon-specific configuration:
+- ROI capture settings
+- Processing parameters
+- Output configuration
 
 ## Data Flow Architecture
 
@@ -272,18 +301,25 @@ NHEM/
 │   ├── index.html            # Single-page application (135KB)
 │   └── config.json           # Frontend configuration
 ├── python_client/             # Python monitoring clients
-│   ├── run_realtime_client.py # Full GUI client
+│   ├── http_realtime_client.py # Full GUI client
 │   ├── simple_http_client.py # Simple GUI client
 │   ├── client.py             # CLI interface
 │   ├── realtime_plotter.py   # Matplotlib plotting component
+│   ├── line_detection/       # Modular line detection package (15 modules)
 │   └── http_client_config.json
+├── SimpleFEM/                 # Standalone ROI daemon
+│   ├── simple_roi_daemon.py  # Main daemon application
+│   ├── simple_fem_config.json # Daemon configuration
+│   └── build_simple_fem_exe.ps1 # PyInstaller build script
 ├── doc/                       # Comprehensive documentation
 │   ├── code_structure/       # Architecture documentation (11 files)
 │   └── single_task/          # Task-specific documentation
 ├── .claude/                   # Claude Code specifications
-│   ├── commands/             # Custom slash commands
+│   ├── commands/             # Custom slash commands (/spec-*, /bug-*)
+│   ├── specs/                # Feature specifications storage
 │   ├── agents/               # Specialized agent configurations
 │   └── templates/            # Document templates
+├── test_*.py                  # 30+ manual test and validation scripts
 └── CLAUDE.md                 # This file
 ```
 
@@ -394,22 +430,38 @@ Python client features for line detection:
 
 ## Development Workflow and Testing
 
+### Spec-Driven Development Workflow
+The project includes a sophisticated development workflow system with custom Claude Code integration:
+
+**Custom Slash Commands** (available in `.claude/commands/`):
+- `/spec-create <feature-name>` - Create new feature specifications (Requirements → Design → Tasks → Implementation)
+- `/spec-execute <feature-name>` - Execute tasks from approved specifications
+- `/spec-status <feature-name>` - Track progress of specification implementation
+- `/spec-list` - List all existing specifications
+- `/spec-steering-setup` - Initialize project steering documents
+- `/bug-*` commands - Systematic bug tracking and fixing workflows
+
+**Workflow Philosophy**:
+- **Structured Development**: Sequential phases without skipping steps (Requirements → Design → Tasks)
+- **User Approval Required**: Each phase must be explicitly approved before proceeding
+- **Atomic Implementation**: 15-30 minute executable tasks with clear boundaries
+- **Agent-Based Validation**: Specialized agents validate requirements, design, and task atomicity
+- **Template System**: Professional templates for specifications, bug reports, and technical documentation
+
+**Usage Example**:
+```bash
+/spec-create user-authentication "Allow users to sign up and log in securely"
+# Follows 4-phase workflow with validation at each step
+# Generates individual task commands like /user-authentication-task-1
+```
+
 ### Manual Testing Strategy
 The project uses comprehensive manual testing rather than automated frameworks:
 - **30+ Test Scripts**: Located in root directory for specific functionality validation
-- **Import Validation**: `test_line_detection_imports.py` for package dependency checks
-- **Error Handling Tests**: `test_error_handling.py` for robustness validation
-- **Memory Management**: `verify_memory_management.py` for performance testing
-- **Syntax Validation**: Multiple syntax checkers across all components
+- **Test Script Examples**: `test_capture_button_fix.py`, `test_waveform_consistency.py`, `test_curve_consistency.py`
+- **Validation Scripts**: `test_line_detection_imports.py`, `test_error_handling.py`, `verify_memory_management.py`
 - **Integration Testing**: End-to-end workflow validation scripts
-
-### Spec-Driven Development Workflow
-The project includes a sophisticated development workflow system:
-- **Custom Slash Commands**: `/spec-*` and `/bug-*` commands in `.claude/commands/`
-- **Agent-Based Validation**: Specialized agents for requirements, design, and task validation
-- **Template System**: Professional templates for specifications, bugs, and technical documentation
-- **Task Atomicity**: 15-30 minute executable tasks with clear boundaries
-- **Hierarchical Context Management**: Sophisticated context loading for development workflows
+- **No Formal Test Framework**: Relies on developer-driven validation rather than pytest/unittest
 
 ### Line Detection Modular Architecture
 The line detection system has been refactored from a monolithic 4900+ line file into 15 focused modules:
@@ -418,6 +470,22 @@ The line detection system has been refactored from a monolithic 4900+ line file 
 - **business/**: Domain logic and API integration
 - **ui/**: UI components and state management
 - **utils/**: Error handling, geometry, and display utilities
+
+### Build and Deployment
+
+**SimpleFEM Executable Build**:
+```bash
+cd SimpleFEM
+powershell -File build_simple_fem_exe.ps1
+# Creates standalone Windows executable using PyInstaller
+# Output: dist/SimpleFEM_ROI_Daemon.exe with config file
+```
+
+**Missing Build Infrastructure**:
+- No package management (setup.py, pyproject.toml)
+- No CI/CD automation
+- No containerization (Docker)
+- No formal build scripts for main application components
 
 ### Error Handling and Recovery
 - **Medical-Grade Error Handling**: Severity classification with automatic recovery
@@ -450,3 +518,10 @@ The line detection system has been refactored from a monolithic 4900+ line file 
 - **Basic Authentication Only**: Simple password-based control (default: 31415)
 - **No Advanced Security**: No OAuth, JWT, session management, or RBAC
 - **No Security Hardening**: Basic CORS configuration only
+
+### Development Environment Setup
+- **Python Requirements**: Python 3.8+ required for all components
+- **Dependency Installation**: Manual pip installation from requirements.txt files
+- **No Package Management**: No setup.py or pyproject.toml for distribution
+- **Configuration Hierarchy**: JSON files → Environment variables (NHEM_* prefix) → Code defaults
+- **Manual Testing**: Developer-driven validation using 30+ test scripts
