@@ -57,6 +57,7 @@ _setup_import_paths()
 
 from peak_detection import detect_peaks  # type: ignore  # noqa: E402
 from green_detector import detect_green_intersection  # type: ignore  # noqa: E402
+from safe_peak_statistics import safe_statistics  # type: ignore  # noqa: E402
 
 
 def load_fem_config() -> Dict:
@@ -335,6 +336,33 @@ def run_daemon() -> None:
                 f"{roi2_gray:.1f}" if roi2_gray is not None else "nan"
             )
 
+            # Add peaks to statistics for Excel data collection (task requirement)
+            try:
+                # Prepare ROI2 information for statistics
+                roi2_info = None
+                if roi2_region is not None:
+                    rx1, ry1, rx2, ry2 = roi2_region
+                    roi2_info = {
+                        'x1': rx1, 'y1': ry1, 'x2': rx2, 'y2': ry2,
+                        'width': rx2 - rx1, 'height': ry2 - ry1
+                    }
+
+                # Add detected peaks to statistics with deduplication
+                safe_statistics.add_peaks_from_daemon(
+                    frame_index=frame_index,
+                    green_peaks=green_peaks,
+                    red_peaks=red_peaks,
+                    curve=list(gray_buffer) if gray_buffer else [],
+                    intersection=last_intersection_roi,
+                    roi2_info=roi2_info,
+                    gray_value=roi2_gray,
+                    difference_threshold=diff_threshold
+                )
+
+            except Exception as e:
+                # Keep daemon running even if statistics collection fails
+                print(f"Statistics collection error: {e}")
+
             # Decide whether to save images/wave for this frame
             has_peak = (green_count > 0) or (red_count > 0)
             should_save = (not only_delect) or has_peak
@@ -416,4 +444,36 @@ def run_daemon() -> None:
 
 
 if __name__ == "__main__":
-    run_daemon()
+    try:
+        run_daemon()
+    except KeyboardInterrupt:
+        # 程序结束时导出最终CSV文件（task要求）
+        print("\n正在导出最终CSV文件...")
+        try:
+            export_path = safe_statistics.export_final_csv()
+            if export_path:
+                print(f"✅ 最终CSV文件已导出至: {export_path}")
+
+                # 显示统计摘要
+                summary = safe_statistics.get_statistics_summary()
+                print(f"📊 统计摘要:")
+                print(f"   总波峰数: {summary.get('total_peaks', 0)}")
+                print(f"   绿色波峰: {summary.get('green_peaks', 0)}")
+                print(f"   红色波峰: {summary.get('red_peaks', 0)}")
+                print(f"   会话时长: {summary.get('session_duration', 'N/A')}")
+                print(f"   会话ID: {summary.get('session_id', 'N/A')}")
+            else:
+                print("ℹ️ 没有数据可导出")
+        except Exception as e:
+            print(f"❌ 导出CSV文件时发生错误: {e}")
+
+        print("守护进程已停止")
+    except Exception as e:
+        print(f"❌ 守护进程运行时发生错误: {e}")
+        # 即使出错也尝试导出数据
+        try:
+            export_path = safe_statistics.export_final_csv()
+            if export_path:
+                print(f"✅ 异常停止前数据已导出至: {export_path}")
+        except Exception:
+            pass
