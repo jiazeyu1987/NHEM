@@ -27,7 +27,19 @@ import cv2
 import matplotlib.pyplot as plt
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _get_base_dir() -> str:
+    """
+    Resolve base directory both for source (.py) and frozen (.exe) modes.
+
+    When packaged with PyInstaller, sys.frozen is True and sys.executable
+    points to the .exe location. In source mode, use this file's directory.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "executable"):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _get_base_dir()
 
 
 def _setup_import_paths() -> None:
