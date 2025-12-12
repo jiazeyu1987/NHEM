@@ -51,9 +51,15 @@ class SafePeakStatistics:
         self.height_tolerance = 0.1      # 高度容差≤0.1
         self.update_count = 0
 
+        # 新增：连续同色波峰去重配置
+        self.consecutive_frame_window = 10  # 连续检查窗口（10帧）
+        self.consecutive_deduplication_enabled = True  # 是否启用连续同色去重
+        self.consecutive_peak_groups: Dict[str, List[Dict[str, Any]]] = {}  # 跟踪连续同色波峰组
+
         # 初始化CSV文件（程序开始时记录）
         self._initialize_csv_file()
         self._add_log(f"SafePeakStatistics初始化完成，会话ID: {self.session_id}")
+        self._add_log(f"连续同色去重配置: 窗口={self.consecutive_frame_window}帧, 启用={self.consecutive_deduplication_enabled}")
 
     def _initialize_csv_file(self):
         """初始化CSV文件，写入表头（程序开始时记录）"""
@@ -64,7 +70,7 @@ class SafePeakStatistics:
             file_exists = os.path.exists(self.csv_path)
 
             with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
-                # 只保留必要字段：peak_type, frame_index, 前后X帧平均值
+                # 包含所有必要字段：peak_type, frame_index, 前后X帧平均值, 波峰最大值
                 fieldnames = [
                     'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg'
                 ]
@@ -113,11 +119,22 @@ class SafePeakStatistics:
                         curve, intersection, roi2_info, gray_value, difference_threshold
                     )
 
-                    # 检查去重（精确实现：高度差≤0.1，宽度匹配，5窗口）
-                    if not self._is_duplicate_peak(peak_data):
-                        self._add_peak_to_memory(peak_data)
-                        self._write_peak_to_csv(peak_data)
-                        self._add_log(f"添加绿色波峰: [{start},{end}], 最大值: {peak_data['max_value']:.1f}, 差值: {peak_data['frame_diff']:.2f}")
+                    # 第一层去重：基于前后帧平均值
+                    if self._is_duplicate_peak(peak_data):
+                        continue
+
+                    # 第二层去重：连续同色波峰去重
+                    if self._is_consecutive_duplicate(peak_data, curve, start, end):
+                        continue
+
+                    # 第三层去重：排除前后帧平均值为0的波峰
+                    if self._is_invalid_peak_data(peak_data):
+                        continue
+
+                    # 三层去重都通过，才记录波峰
+                    self._add_peak_to_memory(peak_data)
+                    self._write_peak_to_csv(peak_data)
+                    self._add_log(f"添加绿色波峰: [{start},{end}], 最大值: {peak_data['peak_max_value']:.1f}")
 
                 # 添加红色波峰
                 for i, (start, end) in enumerate(red_peaks):
@@ -126,11 +143,22 @@ class SafePeakStatistics:
                         curve, intersection, roi2_info, gray_value, difference_threshold
                     )
 
-                    # 检查去重
-                    if not self._is_duplicate_peak(peak_data):
-                        self._add_peak_to_memory(peak_data)
-                        self._write_peak_to_csv(peak_data)
-                        self._add_log(f"添加红色波峰: [{start},{end}], 最大值: {peak_data['max_value']:.1f}, 差值: {peak_data['frame_diff']:.2f}")
+                    # 第一层去重：基于前后帧平均值
+                    if self._is_duplicate_peak(peak_data):
+                        continue
+
+                    # 第二层去重：连续同色波峰去重
+                    if self._is_consecutive_duplicate(peak_data, curve, start, end):
+                        continue
+
+                    # 第三层去重：排除前后帧平均值为0的波峰
+                    if self._is_invalid_peak_data(peak_data):
+                        continue
+
+                    # 三层去重都通过，才记录波峰
+                    self._add_peak_to_memory(peak_data)
+                    self._write_peak_to_csv(peak_data)
+                    self._add_log(f"添加红色波峰: [{start},{end}], 最大值: {peak_data['peak_max_value']:.1f}")
 
                 self.update_count += 1
 
@@ -170,11 +198,15 @@ class SafePeakStatistics:
             post_values = curve[post_start:post_end + 1]
             post_avg = sum(post_values) / len(post_values) if post_values else 0.0
 
+        # 计算波峰区域最大值（用于连续同色去重）
+        peak_max_value = self._get_peak_max_value(curve, start_frame, end_frame)
+
         return {
             'peak_type': peak_type,
             'frame_index': frame_index,
             'pre_peak_avg': round(pre_avg, 2),
-            'post_peak_avg': round(post_avg, 2)
+            'post_peak_avg': round(post_avg, 2),
+            'peak_max_value': round(peak_max_value, 2)  # 新增：波峰最大值
         }
 
     def _calculate_classification_reason(self, frame_diff: float, threshold: float, peak_type: str) -> str:
@@ -245,6 +277,119 @@ class SafePeakStatistics:
             self._add_log(f"去重检查失败: {e}", level="ERROR")
             return False
 
+    def _is_consecutive_duplicate(self, peak_data: Dict[str, Any], curve: List[float], start_frame: int, end_frame: int) -> bool:
+        """检查是否为连续同色重复波峰（10帧内的同色波峰，只保留最高的）"""
+        try:
+            if not self.consecutive_deduplication_enabled:
+                return False
+
+            current_type = peak_data['peak_type']
+            current_frame_index = peak_data['frame_index']
+            current_max_value = self._get_peak_max_value(curve, start_frame, end_frame)
+
+            # 检查最近的波峰中是否有同色连续波峰
+            for recent_peak in self.recent_peaks[-20:]:  # 检查更多波峰以覆盖10帧窗口
+                if recent_peak['peak_type'] != current_type:
+                    continue  # 不同颜色，跳过
+
+                recent_frame_index = recent_peak['frame_index']
+                recent_max_value = recent_peak.get('peak_max_value', 0)
+
+                # 检查是否在10帧窗口内
+                if abs(current_frame_index - recent_frame_index) <= self.consecutive_frame_window:
+                    # 如果当前波峰更低，则是重复波峰
+                    if current_max_value <= recent_max_value:
+                        self._add_log(f"连续同色去重: {current_type}波峰帧{current_frame_index}(高度{current_max_value:.1f}) 低于 帧{recent_frame_index}(高度{recent_max_value:.1f})")
+                        return True
+                    else:
+                        # 如果当前波峰更高，移除之前的较低波峰
+                        self._remove_lower_consecutive_peak(recent_peak)
+                        self._add_log(f"连续同色去重: {current_type}波峰帧{current_frame_index}(高度{current_max_value:.1f}) 高于 帧{recent_frame_index}(高度{recent_max_value:.1f})，移除较低的")
+                        return False
+
+            return False
+        except Exception as e:
+            self._add_log(f"连续同色去重检查失败: {e}", level="ERROR")
+            return False
+
+    def _is_invalid_peak_data(self, peak_data: Dict[str, Any]) -> bool:
+        """检查波峰数据是否无效（前后帧平均值为0）"""
+        try:
+            pre_avg = peak_data.get('pre_peak_avg', 0)
+            post_avg = peak_data.get('post_peak_avg', 0)
+
+            # 如果前后帧平均值都是0，则认为数据无效
+            if pre_avg == 0 or post_avg == 0:
+                peak_type = peak_data.get('peak_type', 'unknown')
+                frame_index = peak_data.get('frame_index', 0)
+                self._add_log(f"无效波峰数据过滤: {peak_type}波峰帧{frame_index}, 前帧平均={pre_avg:.2f}, 后帧平均={post_avg:.2f}")
+                return True
+
+            return False
+        except Exception as e:
+            self._add_log(f"检查无效波峰数据失败: {e}", level="ERROR")
+            return False
+
+    def _get_peak_max_value(self, curve: List[float], start_frame: int, end_frame: int) -> float:
+        """计算波峰区域的最大灰度值"""
+        try:
+            if start_frame < 0 or end_frame >= len(curve) or start_frame > end_frame:
+                return 0.0
+
+            peak_region = curve[start_frame:end_frame + 1]
+            return max(peak_region) if peak_region else 0.0
+        except Exception as e:
+            self._add_log(f"计算波峰最大值失败: {e}", level="ERROR")
+            return 0.0
+
+    def _remove_lower_consecutive_peak(self, peak_to_remove: Dict[str, Any]):
+        """从统计记录中移除较低的连续同色波峰"""
+        try:
+            # 从内存缓存中移除
+            if peak_to_remove in self.recent_peaks:
+                self.recent_peaks.remove(peak_to_remove)
+
+            if peak_to_remove in self.stats_data:
+                self.stats_data.remove(peak_to_remove)
+
+            # 从CSV文件中移除（重新写入整个文件）
+            self._rewrite_csv_without_peak(peak_to_remove)
+
+            self._add_log(f"已移除较低的同色波峰: {peak_to_remove['peak_type']} 帧{peak_to_remove['frame_index']}")
+        except Exception as e:
+            self._add_log(f"移除较低波峰失败: {e}", level="ERROR")
+
+    def _rewrite_csv_without_peak(self, peak_to_remove: Dict[str, Any]):
+        """重新写入CSV文件，移除指定的波峰"""
+        try:
+            if not os.path.exists(self.csv_path):
+                return
+
+            # 读取现有数据
+            rows_to_keep = []
+            with open(self.csv_path, 'r', encoding='utf-8-sig') as csvfile:
+                reader = csv.DictReader(csvfile)
+                fieldnames = reader.fieldnames
+
+                for row in reader:
+                    # 检查是否为要移除的波峰
+                    if (row['peak_type'] == peak_to_remove['peak_type'] and
+                        int(row['frame_index']) == peak_to_remove['frame_index'] and
+                        float(row['pre_peak_avg']) == peak_to_remove['pre_peak_avg'] and
+                        float(row['post_peak_avg']) == peak_to_remove['post_peak_avg']):
+                        continue  # 跳过要移除的行
+                    rows_to_keep.append(row)
+
+            # 重新写入文件
+            with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows_to_keep)
+
+            self._add_log(f"CSV文件已重写，移除了1个较低的同色波峰，保留{len(rows_to_keep)}个波峰")
+        except Exception as e:
+            self._add_log(f"重写CSV文件失败: {e}", level="ERROR")
+
     def _add_peak_to_memory(self, peak_data: Dict[str, Any]):
         """添加波峰到内存缓存"""
         self.recent_peaks.append(peak_data)
@@ -257,10 +402,13 @@ class SafePeakStatistics:
     def _write_peak_to_csv(self, peak_data: Dict[str, Any]):
         """写入单个波峰到CSV文件"""
         try:
-            # 简化的字段列表
+            # 简化的字段列表（只保存CSV中需要的字段）
             fieldnames = [
                 'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg'
             ]
+
+            # 过滤数据，只包含CSV需要的字段
+            csv_data = {key: peak_data[key] for key in fieldnames if key in peak_data}
 
             # 原子性写入：先写临时文件，再重命名
             temp_file = self.csv_path + '.tmp'
@@ -272,7 +420,7 @@ class SafePeakStatistics:
             # 追加新数据
             with open(temp_file, 'a', newline='', encoding='utf-8-sig') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writerow(peak_data)
+                writer.writerow(csv_data)
 
             # 原子性重命名
             if os.path.exists(self.csv_path):

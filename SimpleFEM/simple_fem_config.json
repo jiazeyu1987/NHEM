@@ -27,6 +27,10 @@
     "margin_frames": 5,
     "difference_threshold": 1.1,
     "min_region_length": 5
+  },
+  "deduplication": {
+    "consecutive_frame_window": 10,
+    "consecutive_deduplication_enabled": true
   }
 }
 
