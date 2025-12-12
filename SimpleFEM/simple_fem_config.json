@@ -1,9 +1,15 @@
 {
+  "processing_mode": "video",
   "data_processing": {
     "save_roi1": true,
     "save_roi2": true,
     "save_wave": true,
     "only_delect": true
+  },
+  "video_processing": {
+    "video_path": "123.mp4",
+    "loop_enabled": false,
+    "processing_frame_rate": 10.0
   },
   "roi_capture": {
     "frame_rate": 10,
