@@ -242,6 +242,8 @@ def run_daemon() -> None:
         threshold = float(peak_conf.get("threshold", 105.0))
         margin_frames = int(peak_conf.get("margin_frames", 5))
         diff_threshold = float(peak_conf.get("difference_threshold", 0.5))
+        # 新增：阈值前后“静默”帧数要求（升阈值前 X 帧和降阈值后 X 帧都不能超过阈值）
+        silence_frames = int(peak_conf.get("silence_frames", 0))
         min_region_length = int(peak_conf.get("min_region_length", 1))
 
         logger = setup_peak_logger()
@@ -355,6 +357,7 @@ def run_daemon() -> None:
                             threshold=threshold,
                             marginFrames=margin_frames,
                             differenceThreshold=diff_threshold,
+                            silenceFrames=silence_frames,
                         )
                     except Exception:
                         green_peaks_raw, red_peaks_raw = [], []

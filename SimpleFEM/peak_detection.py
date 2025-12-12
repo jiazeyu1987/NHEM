@@ -1,438 +1,537 @@
 """
-HEM Analyzer 波峰检测模块
-移植自前端JavaScript版本的波峰检测算法
+Peak detection utilities for SimpleFEM.
 
-功能：检测曲线中的绿色（稳定）波峰区间
+Design goals:
+- Keep public API compatible with previous versions.
+- Provide a clear, deterministic definition of green / red peaks:
+  * GREEN: average gray value of the 5 frames after the peak region
+           minus the average of the 5 frames before the peak region
+           is >= differenceThreshold (X).
+  * RED  : all other detected peaks.
+  * No white state is used any more.
 """
 
 from typing import List, Tuple
 import statistics
 
+# Optional external "improved" implementation
+try:
+    from improved_peak_detection import detect_peaks_improved  # type: ignore
+
+    IMPROVED_DETECTION_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    IMPROVED_DETECTION_AVAILABLE = False
+
+
+# Global flag to control whether the improved implementation should be used
+USE_IMPROVED_DETECTION: bool = False
+
+
+# ---------------------------------------------------------------------------
+#  Basic helpers
+# ---------------------------------------------------------------------------
+
+def calculate_frame_difference(
+    curve: List[float],
+    peak_start: int,
+    peak_end: int,
+) -> float:
+    """
+    Compute the average gray difference before/after a peak.
+
+    Definition:
+        frameDifference = average(curve[peak_end+1 : peak_end+6])
+                          - average(curve[peak_start-5 : peak_start])
+
+    The slices are clipped to the valid range; if there are not enough
+    frames on one side, the corresponding peak edge value is used.
+    """
+    n = len(curve)
+    if n == 0:
+        return 0.0
+
+    frame_count = 5
+
+    # Before-peak window
+    before_start = max(0, peak_start - frame_count)
+    before_end = max(0, peak_start - 1)
+    if before_start <= before_end:
+        before_vals = curve[before_start : before_end + 1]
+        before_avg = sum(before_vals) / len(before_vals)
+    else:
+        before_avg = curve[peak_start]
+
+    # After-peak window
+    after_start = min(n - 1, peak_end + 1)
+    after_end = min(n - 1, peak_end + frame_count)
+    if after_start <= after_end:
+        after_vals = curve[after_start : after_end + 1]
+        after_avg = sum(after_vals) / len(after_vals)
+    else:
+        after_avg = curve[peak_end]
+
+    return float(after_avg - before_avg)
+
+
+def classify_peak_color(
+    frameDifference: float,
+    differenceThreshold: float = 0.5,
+) -> str:
+    """
+    Classify peak color using the agreed rule:
+
+    GREEN:
+        (avg gray of 5 frames after peak) -
+        (avg gray of 5 frames before peak) >= differenceThreshold
+
+    RED:
+        All other peaks.
+    """
+    return "green" if frameDifference >= differenceThreshold else "red"
+
+
+# ---------------------------------------------------------------------------
+#  Threshold-based peak detection (original version)
+# ---------------------------------------------------------------------------
 
 def detect_white_peaks_by_threshold(
     curve: List[float],
-    threshold: float = 105,
+    threshold: float = 105.0,
     marginFrames: int = 5,
-    differenceThreshold: float = 2.1
+    differenceThreshold: float = 0.5,
 ) -> List[Tuple[int, int, float]]:
     """
-    绝对阈值法检测波峰
+    Simple absolute-threshold peak detection.
 
-    Args:
-        curve: 输入曲线数据
-        threshold: 绝对灰度阈值
-        marginFrames: 边界扩展帧数
-        differenceThreshold: 帧差值阈值（用于颜色分类）
+    This is the "original" version used mainly for comparison/testing.
+    It groups consecutive samples >= threshold into a peak region.
 
-    Returns:
-        波峰列表：[(start, end, frameDifference), ...]
+    Returns a list of (start, end, frameDifference).
     """
-    peaks = []
     n = len(curve)
-    in_peak = False
-    peak_start = -1
+    if n == 0:
+        return []
 
-    # 第一阶段：识别核心超过阈值的区域
-    for i in range(n):
-        if curve[i] >= threshold:
+    peaks: List[Tuple[int, int]] = []
+    in_peak = False
+    start = 0
+
+    for i, v in enumerate(curve):
+        if v >= threshold:
             if not in_peak:
-                peak_start = i
+                start = i
                 in_peak = True
         else:
             if in_peak:
-                # 结束一个波峰区域
-                peaks.append((peak_start, i - 1))
+                peaks.append((start, i - 1))
                 in_peak = False
 
-    # 处理结尾的波峰
-    if in_peak and peak_start >= 0:
-        peaks.append((peak_start, n - 1))
+    if in_peak:
+        peaks.append((start, n - 1))
 
-    # 第二阶段：边界扩展（保守策略：只包含真正的高值区域）
-    extended_peaks = []
-    for start, end in peaks:
-        # 保守的边界扩展：只扩展1-2帧到真正的边界
-        extended_start = max(0, start - 1)
-        extended_end = min(n - 1, end + 1)
+    # conservative ±1 expansion, matching previous behaviour reasonably well
+    extended: List[Tuple[int, int, float]] = []
+    for s, e in peaks:
+        ext_s = max(0, s - 1)
+        ext_e = min(n - 1, e + 1)
+        frame_diff = calculate_frame_difference(curve, s, e)
+        extended.append((ext_s, ext_e, frame_diff))
 
-        # 检查与前一个波峰的重叠
-        if extended_peaks:
-            prev_start, prev_end, _ = extended_peaks[-1]
-            if extended_start <= prev_end:
-                # 如果重叠，优先保留峰值更高的波峰
-                prev_peak_value = max(curve[prev_start:prev_end + 1])
-                current_peak_value = max(curve[start:end + 1])
+    return extended
 
-                if current_peak_value > prev_peak_value:
-                    # 当前波峰更高，替换前一个
-                    frame_diff = calculate_frame_difference(curve, start, end)
-                    extended_peaks[-1] = (extended_start, extended_end, frame_diff)
-                # 否则保留前一个，忽略当前
+
+# ---------------------------------------------------------------------------
+#  Threshold-based peak detection with proper spacing control
+# ---------------------------------------------------------------------------
+
+def detect_white_peaks_by_threshold_improved(
+    curve: List[float],
+    threshold: float = 105.0,
+    marginFrames: int = 5,
+    silenceFrames: int = 0,
+    differenceThreshold: float = 0.5,
+) -> List[Tuple[int, int, float]]:
+    """
+    Improved absolute-threshold peak detection.
+
+    Differences from the original:
+    - Enforces a minimum spacing of `marginFrames` between peaks:
+      if two peaks are closer than this, only the higher one is kept.
+    - Optionally enforces a "silence" constraint around each peak when
+      `silenceFrames > 0`:
+        * In the `silenceFrames` samples immediately BEFORE the rising
+          edge of a peak, all values must be < threshold.
+        * In the `silenceFrames` samples immediately AFTER the falling
+          edge of a peak, all values must be < threshold.
+      Peaks too close to the boundaries (无法满足前后 X 帧) 将被丢弃。
+    - Still returns (start, end, frameDifference).
+    """
+    n = len(curve)
+    if n == 0:
+        return []
+
+    # First, build raw contiguous >= threshold segments.
+    raw: List[Tuple[int, int]] = []
+    in_peak = False
+    start = 0
+
+    for i, v in enumerate(curve):
+        if v >= threshold:
+            if not in_peak:
+                start = i
+                in_peak = True
+        else:
+            if in_peak:
+                raw.append((start, i - 1))
+                in_peak = False
+
+    if in_peak:
+        raw.append((start, n - 1))
+
+    if not raw:
+        return []
+
+    # Enforce minimal spacing between peaks.
+    if marginFrames > 0 and len(raw) > 1:
+        filtered: List[Tuple[int, int]] = [raw[0]]
+        for s, e in raw[1:]:
+            last_s, last_e = filtered[-1]
+            spacing = s - last_e
+            if spacing >= marginFrames:
+                filtered.append((s, e))
+            else:
+                # keep the region with higher maximum value
+                last_max = max(curve[last_s : last_e + 1])
+                cur_max = max(curve[s : e + 1])
+                if cur_max > last_max:
+                    filtered[-1] = (s, e)
+        raw = filtered
+
+    # Enforce pre/post "silence" around each peak:
+    # - before the rising edge: previous `silenceFrames` samples < threshold
+    # - after the falling edge: next `silenceFrames` samples < threshold
+    if silenceFrames > 0 and raw:
+        silenced: List[Tuple[int, int]] = []
+        for s, e in raw:
+            # Not enough margin at sequence boundaries -> discard this peak
+            if s - silenceFrames < 0 or e + silenceFrames >= n:
                 continue
 
-        # 计算frameDifference用于颜色分类（基于核心区域）
-        frame_diff = calculate_frame_difference(curve, start, end)
-        extended_peaks.append((extended_start, extended_end, frame_diff))
+            pre_ok = all(curve[i] < threshold for i in range(s - silenceFrames, s))
+            post_ok = all(
+                curve[i] < threshold for i in range(e + 1, e + 1 + silenceFrames)
+            )
 
-    return extended_peaks
+            if pre_ok and post_ok:
+                silenced.append((s, e))
 
+        raw = silenced
+
+    if not raw:
+        return []
+
+    # Final slight extension and frame difference computation.
+    result: List[Tuple[int, int, float]] = []
+    for s, e in raw:
+        ext_s = max(0, s - 1)
+        ext_e = min(n - 1, e + 1)
+        frame_diff = calculate_frame_difference(curve, s, e)
+        result.append((ext_s, ext_e, frame_diff))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+#  Morphological / width-based detection (currently unused in daemon)
+# ---------------------------------------------------------------------------
 
 def detect_white_curve_peaks(
     curve: List[float],
-    sensitivity: float = 20,
+    sensitivity: float = 20.0,
     minPeakWidth: int = 3,
     maxPeakWidth: int = 15,
-    minDistance: int = 5
+    minDistance: int = 5,
 ) -> List[Tuple[int, int, float]]:
     """
-    形态检测法检测波峰
+    Width-constrained peak detection.
 
-    Args:
-        curve: 输入曲线数据
-        sensitivity: 相对基线的最小高度要求
-        minPeakWidth: 最小波峰宽度（帧数）
-        maxPeakWidth: 最大波峰宽度（帧数）
-        minDistance: 波峰间最小距离（帧数）
-
-    Returns:
-        波峰列表：[(start, end, frameDifference), ...]
+    This implementation is intentionally simple and is not used by the
+    main daemon at the moment. It is kept for API compatibility.
     """
     n = len(curve)
     if n < minPeakWidth * 2:
         return []
 
-    # 计算基线（使用全局中位数）
     baseline = statistics.median(curve)
-    peaks = []
+    candidates: List[Tuple[int, int, float]] = []
 
-    # 寻找局部极大值
-    for i in range(minPeakWidth, n - minPeakWidth):
-        # 检查是否为局部极大值
-        is_local_max = True
-        for j in range(i - minPeakWidth, i + minPeakWidth + 1):
-            if j != i and curve[j] >= curve[i]:
-                is_local_max = False
-                break
-
-        if not is_local_max:
+    for i in range(1, n - 1):
+        # strict local maximum
+        if not (curve[i] >= curve[i - 1] and curve[i] >= curve[i + 1]):
             continue
 
-        # 检查相对高度
-        peak_height = curve[i] - baseline
-        if peak_height < sensitivity:
+        height = curve[i] - baseline
+        if height < sensitivity:
             continue
 
-        # 向左搜索真正的起始点（严格上升）
-        left_boundary = i
-        for j in range(i - 1, max(0, i - maxPeakWidth), -1):
-            if curve[j] >= curve[j + 1]:  # 不再严格上升
-                left_boundary = j + 1
-                break
-            left_boundary = j
-            if j == 0:
-                break
+        # expand left until monotonic increase breaks
+        l = i
+        while l > 0 and curve[l] >= curve[l - 1]:
+            l -= 1
 
-        # 向右搜索真正的结束点（严格下降）
-        right_boundary = i
-        for j in range(i + 1, min(n, i + maxPeakWidth + 1)):
-            if curve[j] >= curve[j - 1]:  # 不再严格下降
-                right_boundary = j - 1
-                break
-            right_boundary = j
-            if j == n - 1:
-                break
+        # expand right until monotonic decrease breaks
+        r = i
+        while r < n - 1 and curve[r] >= curve[r + 1]:
+            r += 1
 
-        # 优化：确保波峰不包含明显的低值区域
-        # 向左收缩，直到找到第一个显著上升点
-        while left_boundary < i and curve[left_boundary] < baseline + sensitivity * 0.3:
-            left_boundary += 1
-
-        # 向右收缩，直到找到第一个显著下降点
-        while right_boundary > i and curve[right_boundary] < baseline + sensitivity * 0.3:
-            right_boundary -= 1
-
-        # 检查波峰宽度
-        peak_width = right_boundary - left_boundary + 1
-        if peak_width < minPeakWidth or peak_width > maxPeakWidth:
+        width = r - l + 1
+        if width < minPeakWidth or width > maxPeakWidth:
             continue
 
-        # 计算frameDifference
-        frame_diff = calculate_frame_difference(curve, left_boundary, right_boundary)
-        peaks.append((left_boundary, right_boundary, frame_diff))
+        frame_diff = calculate_frame_difference(curve, l, r)
+        candidates.append((l, r, frame_diff))
 
-    # 距离去重：如果两个波峰距离太近，保留较高的那个
-    if len(peaks) <= 1:
-        return peaks
+    # simple distance-based deduplication
+    if not candidates:
+        return []
 
-    filtered_peaks = [peaks[0]]
-    for current in peaks[1:]:
-        prev_start, prev_end, _ = filtered_peaks[-1]
-        current_start, current_end, _ = current
-
-        if current_start - prev_end < minDistance:
-            # 距离太近，比较峰值
-            prev_peak_value = max(curve[prev_start:prev_end + 1])
-            current_peak_value = max(curve[current_start:current_end + 1])
-
-            if current_peak_value > prev_peak_value:
-                filtered_peaks[-1] = current
-            # 否则保留前一个，丢弃当前
+    candidates.sort(key=lambda p: p[0])
+    filtered: List[Tuple[int, int, float]] = [candidates[0]]
+    for s, e, fd in candidates[1:]:
+        last_s, last_e, _ = filtered[-1]
+        if s - last_e < minDistance:
+            # too close, keep the higher peak
+            last_max = max(curve[last_s : last_e + 1])
+            cur_max = max(curve[s : e + 1])
+            if cur_max > last_max:
+                filtered[-1] = (s, e, fd)
         else:
-            filtered_peaks.append(current)
+            filtered.append((s, e, fd))
 
-    return filtered_peaks
+    return filtered
 
 
-def calculate_frame_difference(
-    curve: List[float],
+# ---------------------------------------------------------------------------
+#  Improved color classification wrapper
+# ---------------------------------------------------------------------------
+
+def classify_peak_color_improved(
+    frameDifference: float,
+    differenceThreshold: float,
     peak_start: int,
-    peak_end: int
-) -> float:
+    peak_end: int,
+    curve: List[float],
+) -> str:
     """
-    计算波峰前后的帧差值
+    Improved peak color classification.
 
-    Args:
-        curve: 输入曲线数据
-        peak_start: 波峰起始位置
-        peak_end: 波峰结束位置
+    For now, the rule is intentionally aligned with `classify_peak_color`:
+    - GREEN: frameDifference >= differenceThreshold
+    - RED  : otherwise
 
-    Returns:
-        帧差值（后N帧平均值 - 前N帧平均值）
+    Extra arguments are accepted to keep backward compatibility.
     """
-    n = len(curve)
-    frame_count = 5  # 前5帧和后5帧
-
-    # 计算前5帧的平均值
-    before_start = max(0, peak_start - frame_count)
-    before_end = max(0, peak_start - 1)
-
-    if before_start <= before_end:
-        before_avg = sum(curve[before_start:before_end + 1]) / (before_end - before_start + 1)
-    else:
-        before_avg = curve[peak_start]  # 如果没有前5帧，使用波峰起始值
-
-    # 计算后5帧的平均值
-    after_start = min(n - 1, peak_end + 1)
-    after_end = min(n - 1, peak_end + frame_count)
-
-    if after_start <= after_end:
-        after_avg = sum(curve[after_start:after_end + 1]) / (after_end - after_start + 1)
-    else:
-        after_avg = curve[peak_end]  # 如果没有后5帧，使用波峰结束值
-
-    return after_avg - before_avg
+    return classify_peak_color(frameDifference, differenceThreshold)
 
 
-def classify_peak_color(frameDifference: float, differenceThreshold: float = 0.5) -> str:
-    """
-    波峰颜色分类
-
-    Args:
-        frameDifference: 帧差值
-        differenceThreshold: 差值阈值（调整为更宽松的0.5）
-
-    Returns:
-        颜色分类：'green', 'red', 'white'
-    """
-    if frameDifference > differenceThreshold:
-        return 'green'  # 稳定波峰
-    elif frameDifference <= differenceThreshold:
-        return 'red'    # 不稳定波峰
-    else:
-        return 'white'  # 边界情况
-
+# ---------------------------------------------------------------------------
+#  Peak scoring (used only in tests/experiments at the moment)
+# ---------------------------------------------------------------------------
 
 def evaluate_peak_score(
     curve: List[float],
     start: int,
     end: int,
     frame_diff: float,
-    differenceThreshold: float = 2.1
+    differenceThreshold: float = 2.1,
 ) -> float:
     """
-    评估波峰质量得分
+    Compute a simple quality score for a peak.
 
-    Args:
-        curve: 输入曲线数据
-        start: 波峰起始位置
-        end: 波峰结束位置
-        frame_diff: 帧差值
-        differenceThreshold: 差值阈值
-
-    Returns:
-        波峰质量得分（越高越好）
+    Higher scores mean "better" peaks.
     """
-    # 基本检查
-    if start >= end or start < 0 or end >= len(curve):
+    if start < 0 or end <= start or end >= len(curve):
         return 0.0
 
-    peak_values = curve[start:end + 1]
-    peak_max = max(peak_values)
-    peak_avg = sum(peak_values) / len(peak_values)
+    segment = curve[start : end + 1]
+    peak_max = max(segment)
+    peak_avg = sum(segment) / len(segment)
     peak_width = end - start + 1
 
-    # 评分因子
     score = 0.0
 
-    # 1. 峰值高度（越高越好）
+    # 1. Height contribution
     score += peak_max * 0.4
 
-    # 2. 颜色分类（绿色加分，红色减分）
+    # 2. Color contribution (green preferred over red)
     color = classify_peak_color(frame_diff, differenceThreshold)
-    if color == 'green':
-        score += 50  # 绿色波峰大幅加分
+    if color == "green":
+        score += 50.0
     else:
-        score -= 30  # 红色波峰减分
+        score -= 30.0
 
-    # 3. 波峰紧凑度（宽度越小得分越高）
-    compactness_score = max(0, 20 - peak_width)
-    score += compactness_score
+    # 3. Compactness (narrower peaks get higher score up to a limit)
+    score += max(0.0, 20.0 - float(peak_width))
 
-    # 4. 均值与峰值差异（峰值显著高于平均值加分）
+    # 4. Prominence: relative distance between max and mean
     if peak_avg > 0:
-        prominence_score = (peak_max - peak_avg) / peak_avg * 10
-        score += prominence_score
+        score += (peak_max - peak_avg) / peak_avg * 10.0
 
     return score
 
 
+# ---------------------------------------------------------------------------
+#  Main API: detect_peaks
+# ---------------------------------------------------------------------------
+
 def detect_peaks(
     curve: List[float],
-    threshold: float = 105,
+    threshold: float = 105.0,
     marginFrames: int = 5,
-    differenceThreshold: float = 0.5
+    differenceThreshold: float = 0.5,
+    silenceFrames: int = 0,
+    use_improved: bool = False,
+    **config_params,
 ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
-    主函数：使用绝对阈值检测曲线中的波峰，按颜色分类返回
+    Detect peaks and classify them into green (stable) and red (unstable).
 
-    Args:
-        curve: 输入曲线数据（数组）
-        threshold: 绝对灰度阈值 (0-200)
-        marginFrames: 边界扩展帧数
-        differenceThreshold: 帧差值阈值（用于颜色分类）
-
-    Returns:
-        Tuple[绿色波峰列表, 红色波峰列表]:
-        - 绿色波峰：[(start_frame, end_frame), ...] - 稳定的HEM事件
-        - 红色波峰：[(start_frame, end_frame), ...] - 不稳定事件
+    - When an external improved implementation is available and enabled,
+      this function delegates to `detect_peaks_improved`.
+    - Otherwise it uses the internal improved threshold-based detector
+      plus the agreed green/red rule based on frameDifference.
     """
-    # 打印传入的参数
-    # #print(f"DEBUG detect_peaks 调用参数:")
-    # #print(f"  curve: 长度={len(curve) if curve else 0}, 范围=[{min(curve):.1f}, {max(curve):.1f}]")
-    # #print(f"  threshold: {threshold}")
-    # #print(f"  marginFrames: {marginFrames}")
-    # #print(f"  differenceThreshold: {differenceThreshold}")
-
     if not curve:
         return [], []
 
-    # 只使用绝对阈值检测
-    threshold_peaks = detect_white_peaks_by_threshold(
-        curve, threshold, marginFrames, differenceThreshold
+    # Decide which implementation to use.
+    use_improved_algo = use_improved or USE_IMPROVED_DETECTION
+    if use_improved_algo and IMPROVED_DETECTION_AVAILABLE:
+        # Delegate to external implementation; assumed to respect the
+        # same classification semantics.
+        # Pass silenceFrames via config_params so external impl can choose
+        # to honour it or ignore it.
+        if "silenceFrames" not in config_params:
+            config_params["silenceFrames"] = silenceFrames
+        return detect_peaks_improved(
+            curve,
+            threshold,
+            marginFrames,
+            differenceThreshold,
+            **config_params,
+        )
+
+    # Internal improved threshold-based detection.
+    peaks_with_diff = detect_white_peaks_by_threshold_improved(
+        curve,
+        threshold=threshold,
+        marginFrames=marginFrames,
+        silenceFrames=silenceFrames,
+        differenceThreshold=differenceThreshold,
     )
 
-    #print(f"调试信息:")
-    #print(f"  绝对阈值法检测到 {len(threshold_peaks)} 个波峰:")
-    for i, (start, end, frame_diff) in enumerate(threshold_peaks):
-        peak_val = max(curve[start:end+1])
-        #print(f"    {i+1}: [{start}, {end}], 峰值: {peak_val:.1f}, frameDiff: {frame_diff:.2f}")
+    green_peaks: List[Tuple[int, int]] = []
+    red_peaks: List[Tuple[int, int]] = []
 
-    # 按颜色分类波峰
-    green_peaks = []
-    red_peaks = []
-    #print(f"  波峰颜色分类结果:")
-    for i, (start, end, frame_diff) in enumerate(threshold_peaks):
+    for start, end, frame_diff in peaks_with_diff:
         color = classify_peak_color(frame_diff, differenceThreshold)
-        #print(f"    波峰{i+1}: [{start}, {end}], frameDiff: {frame_diff:.2f}, 颜色: {color}")
-
-        if color == 'green':
+        if color == "green":
             green_peaks.append((start, end))
-            #print(f"      [GREEN] 添加到绿色波峰列表")
-        elif color == 'red':
+        else:  # "red"
             red_peaks.append((start, end))
-            #print(f"      [RED] 添加到红色波峰列表")
-        else:
-            red_peaks.append((start, end))  # 白色波峰归类到红色
-            #print(f"      [RED->WHITE] 添加到红色波峰列表（白色归类）")
 
     return green_peaks, red_peaks
 
 
-# 保持向后兼容的别名函数
+# ---------------------------------------------------------------------------
+#  Global toggles and compatibility wrappers
+# ---------------------------------------------------------------------------
+
+def enable_improved_detection(enable: bool = True) -> bool:
+    """
+    Enable or disable the external improved peak detection algorithm.
+
+    Returns True if the requested state is active, False otherwise.
+    """
+    global USE_IMPROVED_DETECTION
+
+    if enable and not IMPROVED_DETECTION_AVAILABLE:
+        print("Warning: improved_peak_detection.detect_peaks_improved not available")
+        USE_IMPROVED_DETECTION = False
+        return False
+
+    USE_IMPROVED_DETECTION = bool(enable)
+    status = "enabled" if USE_IMPROVED_DETECTION else "disabled"
+    print(f"Improved peak detection is now {status}")
+    return True
+
+
+def is_improved_detection_enabled() -> bool:
+    """Return True if the improved detection pipeline is active."""
+    return USE_IMPROVED_DETECTION and IMPROVED_DETECTION_AVAILABLE
+
+
 def detect_green_peaks(
     curve: List[float],
-    threshold: float = 105,
+    threshold: float = 105.0,
     marginFrames: int = 5,
-    differenceThreshold: float = 0.5
+    differenceThreshold: float = 0.5,
 ) -> List[Tuple[int, int]]:
     """
-    向后兼容函数：只返回绿色波峰（保持原有接口）
-
-    Args:
-        curve: 输入曲线数据（数组）
-        threshold: 绝对灰度阈值 (0-200)
-        marginFrames: 边界扩展帧数
-        differenceThreshold: 帧差值阈值（用于颜色分类）
-
-    Returns:
-        绿色区间集合：[(start_frame, end_frame), ...]
+    Backwards-compatible helper: return only green peak intervals.
     """
-    green_peaks, _ = detect_peaks(curve, threshold, marginFrames, differenceThreshold)
-    return green_peaks
+    greens, _ = detect_peaks(
+        curve,
+        threshold=threshold,
+        marginFrames=marginFrames,
+        differenceThreshold=differenceThreshold,
+    )
+    return greens
 
 
-# 示例使用
-if __name__ == "__main__":
-    # 测试数据
-    test_curve = [40, 42, 45, 48, 52, 108, 110, 112, 109, 107, 45, 43, 41,
-                  42, 44, 46, 49, 53, 55, 58, 60, 62, 61, 59, 45, 43, 41,
-                  42, 45, 110, 115, 118, 116, 113, 48, 46, 44, 42, 41]
+if __name__ == "__main__":  # pragma: no cover - manual quick test
+    test_curve = [
+        40,
+        42,
+        45,
+        48,
+        52,
+        108,
+        110,
+        112,
+        109,
+        107,
+        45,
+        43,
+        41,
+        42,
+        44,
+        46,
+        49,
+        53,
+        55,
+        58,
+        60,
+        62,
+        61,
+        59,
+        45,
+        43,
+        41,
+        42,
+        45,
+        110,
+        115,
+        118,
+        116,
+        113,
+        48,
+        46,
+        44,
+        42,
+        41,
+    ]
 
-    #print("测试数据（索引: 值）:")
-    for i, val in enumerate(test_curve):
-        #print(f"{i:2d}: {val:3d}", end="  ")
-        if (i + 1) % 10 == 0:
-            pass
-            #print()
-    #print("\n")
-
-    # 使用新函数检测绿色和红色波峰
-    green_intervals, red_intervals = detect_peaks(test_curve)
-
-    #print("=" * 50)
-    #print("🟩 绿色波峰（稳定的HEM事件）:")
-    if green_intervals:
-        for i, (start, end) in enumerate(green_intervals, 1):
-            peak_values = test_curve[start:end+1]
-            peak_max = max(peak_values)
-            peak_avg = sum(peak_values) / len(peak_values)
-            #print(f"  绿色波峰 {i}: [{start}, {end}]")
-            #print(f"    - 区间长度: {end-start+1} 帧")
-            #print(f"    - 平均值: {peak_avg:.1f}")
-            #print(f"    - 峰值: {peak_max:.1f}")
-    else:
-        #print("  未检测到绿色波峰")
-        pass
-
-    #print(f"\n[RED] 红色波峰（不稳定事件）:")
-    if red_intervals:
-        for i, (start, end) in enumerate(red_intervals, 1):
-            peak_values = test_curve[start:end+1]
-            peak_max = max(peak_values)
-            peak_avg = sum(peak_values) / len(peak_values)
-            #print(f"  红色波峰 {i}: [{start}, {end}]")
-            #print(f"    - 区间长度: {end-start+1} 帧")
-            #print(f"    - 平均值: {peak_avg:.1f}")
-            #print(f"    - 峰值: {peak_max:.1f}")
-    else:
-        #print("  未检测到红色波峰")
-        pass
-
-    #print("\n" + "=" * 50)
-    #print(f"[SUMMARY] 总结: 检测到 {len(green_intervals)} 个绿色波峰, {len(red_intervals)} 个红色波峰")
-
-    # 演示向后兼容函数
-    #print("\n" + "=" * 50)
-    #print("[TEST] 测试向后兼容函数 detect_green_peaks():")
-    green_only = detect_green_peaks(test_curve)
-    #print(f"  只返回绿色波峰: {green_only}")
+    g, r = detect_peaks(test_curve, threshold=100.0, marginFrames=5, differenceThreshold=0.5)
+    print("Green peaks:", g)
+    print("Red peaks  :", r)

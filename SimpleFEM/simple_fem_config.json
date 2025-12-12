@@ -29,14 +29,37 @@
     }
   },
   "peak_detection": {
-    "threshold": 90.0,
+    "threshold": 95.0,
     "margin_frames": 5,
-    "difference_threshold": 1.1,
-    "min_region_length": 5
+    "silence_frames": 0,
+    "difference_threshold": 0.5,
+    "min_region_length": 5,
+    "use_improved_algorithm": false,
+    "preprocessing": {
+      "noise_reduction_factor": 0.8,
+      "baseline_correction": true,
+      "smoothing_window": 5
+    },
+    "detection": {
+      "min_peak_width": 3,
+      "max_peak_width": 20,
+      "min_peak_distance": 10,
+      "prominence_factor": 0.1
+    },
+    "classification": {
+      "stability_window": 5,
+      "error_tolerance": 0.15,
+      "min_green_prominence": 0.3,
+      "red_detection_variance": 0.4
+    },
+    "tracking": {
+      "enable_lifecycle_tracking": true,
+      "peak_matching_threshold": 0.8,
+      "max_tracking_age": 15
+    }
   },
   "deduplication": {
     "consecutive_frame_window": 10,
     "consecutive_deduplication_enabled": true
   }
 }
-

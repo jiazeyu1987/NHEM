@@ -41,10 +41,13 @@ class SafePeakStatistics:
         self.start_time = datetime.now()
         self.session_id = self.start_time.strftime("%Y%m%d_%H%M%S")
 
-        # 文件路径
+        # 文件路径 - 保存到export文件夹
+        export_dir = os.path.join(BASE_DIR, "export")
+        os.makedirs(export_dir, exist_ok=True)
+
         self.csv_filename = f"peak_statistics_{self.session_id}.csv"
-        self.csv_path = os.path.join(BASE_DIR, self.csv_filename)
-        self.final_export_path = os.path.join(BASE_DIR, f"peak_statistics_final_{self.session_id}.csv")
+        self.csv_path = os.path.join(export_dir, self.csv_filename)
+        self.final_export_path = os.path.join(export_dir, f"peak_statistics_final_{self.session_id}.csv")
 
         # 配置参数（根据task要求）
         self.duplicate_check_window = 5  # 检查最近5个波峰
