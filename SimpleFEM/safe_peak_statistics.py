@@ -75,7 +75,7 @@ class SafePeakStatistics:
             with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 # 包含所有必要字段：peak_type, frame_index, 前后X帧平均值, 波峰最大值
                 fieldnames = [
-                    'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg'
+                    'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg', 'peak_max_value'
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -97,7 +97,8 @@ class SafePeakStatistics:
                             intersection: Optional[Tuple[int, int]] = None,
                             roi2_info: Optional[Dict[str, int]] = None,
                             gray_value: Optional[float] = None,
-                            difference_threshold: float = 1.1):
+                            difference_threshold: float = 1.1,
+                            pre_post_avg_frames: int = 5):
         """
         从守护进程添加波峰数据
 
@@ -119,7 +120,7 @@ class SafePeakStatistics:
                 for i, (start, end) in enumerate(green_peaks):
                     peak_data = self._create_peak_data(
                         timestamp, frame_index, "green", start, end,
-                        curve, intersection, roi2_info, gray_value, difference_threshold
+                        curve, intersection, roi2_info, gray_value, difference_threshold, pre_post_avg_frames
                     )
 
                     # 第一层去重：基于前后帧平均值
@@ -143,7 +144,7 @@ class SafePeakStatistics:
                 for i, (start, end) in enumerate(red_peaks):
                     peak_data = self._create_peak_data(
                         timestamp, frame_index, "red", start, end,
-                        curve, intersection, roi2_info, gray_value, difference_threshold
+                        curve, intersection, roi2_info, gray_value, difference_threshold, pre_post_avg_frames
                     )
 
                     # 第一层去重：基于前后帧平均值
@@ -178,11 +179,12 @@ class SafePeakStatistics:
                          intersection: Optional[Tuple[int, int]],
                          roi2_info: Optional[Dict[str, int]],
                          gray_value: Optional[float],
-                         difference_threshold: float) -> Dict[str, Any]:
+                         difference_threshold: float,
+                         pre_post_avg_frames: int = 5) -> Dict[str, Any]:
         """创建简化的波峰数据结构（只保留必要字段）"""
 
         # 计算前X帧平均值（波峰开始前5帧）
-        pre_frames = 5
+        pre_frames = int(pre_post_avg_frames) if int(pre_post_avg_frames) > 0 else 5
         pre_start = max(0, start_frame - pre_frames)
         pre_end = start_frame - 1
         pre_avg = 0.0
@@ -192,12 +194,12 @@ class SafePeakStatistics:
             pre_avg = sum(pre_values) / len(pre_values) if pre_values else 0.0
 
         # 计算后X帧平均值（波峰结束后5帧）
-        post_frames = 5
+        post_frames = int(pre_post_avg_frames) if int(pre_post_avg_frames) > 0 else 5
         post_start = end_frame + 1
-        post_end = end_frame + post_frames
+        post_end = min(len(curve) - 1, end_frame + post_frames)
         post_avg = 0.0
 
-        if post_start < len(curve) and post_end < len(curve):
+        if 0 <= post_start <= post_end:
             post_values = curve[post_start:post_end + 1]
             post_avg = sum(post_values) / len(post_values) if post_values else 0.0
 
@@ -407,7 +409,7 @@ class SafePeakStatistics:
         try:
             # 简化的字段列表（只保存CSV中需要的字段）
             fieldnames = [
-                'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg'
+                'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg', 'peak_max_value'
             ]
 
             # 过滤数据，只包含CSV需要的字段

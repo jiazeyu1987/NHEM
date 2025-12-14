@@ -244,6 +244,7 @@ def run_daemon() -> None:
         diff_threshold = float(peak_conf.get("difference_threshold", 0.5))
         # 新增：阈值前后“静默”帧数要求（升阈值前 X 帧和降阈值后 X 帧都不能超过阈值）
         silence_frames = int(peak_conf.get("silence_frames", 0))
+        pre_post_avg_frames = int(peak_conf.get("pre_post_avg_frames", 5))
         # 新增：自适应阈值（基于 ROI2 灰度历史均值）
         adaptive_threshold_enabled = bool(peak_conf.get("adaptive_threshold_enabled", False))
         threshold_over_mean_ratio = float(peak_conf.get("threshold_over_mean_ratio", 0.1))
@@ -253,9 +254,11 @@ def run_daemon() -> None:
         logger = setup_peak_logger()
         # Store only the latest 100 gray values for waveform / peak detection
         gray_buffer: Deque[float] = deque(maxlen=100)
-        # Track session-wide historical mean gray value with O(1) incremental update
-        gray_history_count: int = 0
-        gray_history_mean: float = 0.0
+        # Track a session-wide "background mean" using a gated incremental mean:
+        # only update the mean when the current gray value is below the current
+        # (mean-based) threshold, so peak frames do not contaminate the baseline.
+        bg_count: int = 0
+        bg_mean: float = 0.0
         last_intersection_roi: Optional[Tuple[int, int]] = None
 
         # Prepare per-session image save directories if enabled
@@ -352,9 +355,19 @@ def run_daemon() -> None:
                     roi2_gray = compute_average_gray(roi2_image)
                     gray_buffer.append(roi2_gray)
 
-                    # Update historical mean (all frames in this session, not just buffer)
-                    gray_history_count += 1
-                    gray_history_mean += (roi2_gray - gray_history_mean) / gray_history_count
+                    # Update background mean with gating (exclude peak/high frames).
+                    if bg_count == 0:
+                        bg_count = 1
+                        bg_mean = roi2_gray
+                    else:
+                        if adaptive_threshold_enabled and bg_mean > 0:
+                            gate_threshold = bg_mean * (1.0 + threshold_over_mean_ratio)
+                        else:
+                            gate_threshold = threshold
+
+                        if roi2_gray < gate_threshold:
+                            bg_count += 1
+                            bg_mean += (roi2_gray - bg_mean) / bg_count
 
                 # 5. Run peak detection on current gray buffer
                 green_peaks: List[Tuple[int, int]] = []
@@ -367,10 +380,10 @@ def run_daemon() -> None:
                     threshold_used = threshold
                     if (
                         adaptive_threshold_enabled
-                        and gray_history_count >= history_mean_min_samples
-                        and gray_history_mean > 0
+                        and bg_count >= history_mean_min_samples
+                        and bg_mean > 0
                     ):
-                        threshold_used = gray_history_mean * (1.0 + threshold_over_mean_ratio)
+                        threshold_used = bg_mean * (1.0 + threshold_over_mean_ratio)
                     try:
                         green_peaks_raw, red_peaks_raw = detect_peaks(
                             curve,
@@ -378,6 +391,7 @@ def run_daemon() -> None:
                             marginFrames=margin_frames,
                             differenceThreshold=diff_threshold,
                             silenceFrames=silence_frames,
+                            avgFrames=pre_post_avg_frames,
                         )
                     except Exception:
                         green_peaks_raw, red_peaks_raw = [], []
@@ -425,7 +439,8 @@ def run_daemon() -> None:
                         intersection=last_intersection_roi,
                         roi2_info=roi2_info,
                         gray_value=roi2_gray,
-                        difference_threshold=diff_threshold
+                        difference_threshold=diff_threshold,
+                        pre_post_avg_frames=pre_post_avg_frames,
                     )
 
                 except Exception as e:
@@ -465,21 +480,37 @@ def run_daemon() -> None:
                         x = list(range(len(curve)))
                         ax.plot(x, curve, color="black", linewidth=1)
 
-                        # Highlight green and red regions
+                        # Draw session-wide background mean (adaptive threshold baseline)
+                        if bg_count > 0:
+                            ax.axhline(
+                                bg_mean,
+                                color="blue",
+                                linestyle="--",
+                                linewidth=1,
+                                label="bg_mean",
+                            )
+
+                        # Highlight green and red regions (slightly expanded for readability)
                         for start, end in green_peaks:
-                            xs = list(range(start, end + 1))
-                            ys = curve[start : end + 1]
+                            s = max(0, start - 1)
+                            e = min(len(curve) - 1, end + 1)
+                            xs = list(range(s, e + 1))
+                            ys = curve[s : e + 1]
                             ax.plot(xs, ys, color="green", linewidth=2)
 
                         for start, end in red_peaks:
-                            xs = list(range(start, end + 1))
-                            ys = curve[start : end + 1]
+                            s = max(0, start - 1)
+                            e = min(len(curve) - 1, end + 1)
+                            xs = list(range(s, e + 1))
+                            ys = curve[s : e + 1]
                             ax.plot(xs, ys, color="red", linewidth=2)
 
                         ax.set_xlabel("Frame index in buffer")
                         ax.set_ylabel("Gray value")
                         ax.set_title("ROI2 gray waveform with peaks")
                         ax.grid(True, linestyle="--", alpha=0.3)
+                        if bg_count > 0:
+                            ax.legend(loc="best", fontsize=8)
                         fig.tight_layout()
                         fig.savefig(wave_path)
                         plt.close(fig)

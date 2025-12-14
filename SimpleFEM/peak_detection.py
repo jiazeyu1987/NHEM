@@ -35,6 +35,7 @@ def calculate_frame_difference(
     curve: List[float],
     peak_start: int,
     peak_end: int,
+    avgFrames: int = 5,
 ) -> float:
     """
     Compute the average gray difference before/after a peak.
@@ -50,7 +51,9 @@ def calculate_frame_difference(
     if n == 0:
         return 0.0
 
-    frame_count = 5
+    frame_count = int(avgFrames)
+    if frame_count <= 0:
+        frame_count = 5
 
     # Before-peak window
     before_start = max(0, peak_start - frame_count)
@@ -99,6 +102,7 @@ def detect_white_peaks_by_threshold(
     threshold: float = 105.0,
     marginFrames: int = 5,
     differenceThreshold: float = 0.5,
+    avgFrames: int = 5,
 ) -> List[Tuple[int, int, float]]:
     """
     Simple absolute-threshold peak detection.
@@ -129,15 +133,12 @@ def detect_white_peaks_by_threshold(
     if in_peak:
         peaks.append((start, n - 1))
 
-    # conservative ±1 expansion, matching previous behaviour reasonably well
-    extended: List[Tuple[int, int, float]] = []
+    result: List[Tuple[int, int, float]] = []
     for s, e in peaks:
-        ext_s = max(0, s - 1)
-        ext_e = min(n - 1, e + 1)
-        frame_diff = calculate_frame_difference(curve, s, e)
-        extended.append((ext_s, ext_e, frame_diff))
+        frame_diff = calculate_frame_difference(curve, s, e, avgFrames=avgFrames)
+        result.append((s, e, frame_diff))
 
-    return extended
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,7 @@ def detect_white_peaks_by_threshold_improved(
     marginFrames: int = 5,
     silenceFrames: int = 0,
     differenceThreshold: float = 0.5,
+    avgFrames: int = 5,
 ) -> List[Tuple[int, int, float]]:
     """
     Improved absolute-threshold peak detection.
@@ -230,13 +232,11 @@ def detect_white_peaks_by_threshold_improved(
     if not raw:
         return []
 
-    # Final slight extension and frame difference computation.
+    # Final frame difference computation.
     result: List[Tuple[int, int, float]] = []
     for s, e in raw:
-        ext_s = max(0, s - 1)
-        ext_e = min(n - 1, e + 1)
-        frame_diff = calculate_frame_difference(curve, s, e)
-        result.append((ext_s, ext_e, frame_diff))
+        frame_diff = calculate_frame_difference(curve, s, e, avgFrames=avgFrames)
+        result.append((s, e, frame_diff))
 
     return result
 
@@ -288,7 +288,7 @@ def detect_white_curve_peaks(
         if width < minPeakWidth or width > maxPeakWidth:
             continue
 
-        frame_diff = calculate_frame_difference(curve, l, r)
+        frame_diff = calculate_frame_difference(curve, l, r, avgFrames=5)
         candidates.append((l, r, frame_diff))
 
     # simple distance-based deduplication
@@ -390,6 +390,7 @@ def detect_peaks(
     marginFrames: int = 5,
     differenceThreshold: float = 0.5,
     silenceFrames: int = 0,
+    avgFrames: int = 5,
     use_improved: bool = False,
     **config_params,
 ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
@@ -413,6 +414,8 @@ def detect_peaks(
         # to honour it or ignore it.
         if "silenceFrames" not in config_params:
             config_params["silenceFrames"] = silenceFrames
+        if "avgFrames" not in config_params:
+            config_params["avgFrames"] = avgFrames
         return detect_peaks_improved(
             curve,
             threshold,
@@ -428,6 +431,7 @@ def detect_peaks(
         marginFrames=marginFrames,
         silenceFrames=silenceFrames,
         differenceThreshold=differenceThreshold,
+        avgFrames=avgFrames,
     )
 
     green_peaks: List[Tuple[int, int]] = []
