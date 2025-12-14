@@ -244,11 +244,18 @@ def run_daemon() -> None:
         diff_threshold = float(peak_conf.get("difference_threshold", 0.5))
         # 新增：阈值前后“静默”帧数要求（升阈值前 X 帧和降阈值后 X 帧都不能超过阈值）
         silence_frames = int(peak_conf.get("silence_frames", 0))
+        # 新增：自适应阈值（基于 ROI2 灰度历史均值）
+        adaptive_threshold_enabled = bool(peak_conf.get("adaptive_threshold_enabled", False))
+        threshold_over_mean_ratio = float(peak_conf.get("threshold_over_mean_ratio", 0.1))
+        history_mean_min_samples = int(peak_conf.get("history_mean_min_samples", 30))
         min_region_length = int(peak_conf.get("min_region_length", 1))
 
         logger = setup_peak_logger()
         # Store only the latest 100 gray values for waveform / peak detection
         gray_buffer: Deque[float] = deque(maxlen=100)
+        # Track session-wide historical mean gray value with O(1) incremental update
+        gray_history_count: int = 0
+        gray_history_mean: float = 0.0
         last_intersection_roi: Optional[Tuple[int, int]] = None
 
         # Prepare per-session image save directories if enabled
@@ -345,16 +352,29 @@ def run_daemon() -> None:
                     roi2_gray = compute_average_gray(roi2_image)
                     gray_buffer.append(roi2_gray)
 
+                    # Update historical mean (all frames in this session, not just buffer)
+                    gray_history_count += 1
+                    gray_history_mean += (roi2_gray - gray_history_mean) / gray_history_count
+
                 # 5. Run peak detection on current gray buffer
                 green_peaks: List[Tuple[int, int]] = []
                 red_peaks: List[Tuple[int, int]] = []
 
                 if gray_buffer:
                     curve = list(gray_buffer)
+                    # Compute adaptive threshold if enabled and enough history is available.
+                    # threshold_used = historical_mean * (1 + ratio)
+                    threshold_used = threshold
+                    if (
+                        adaptive_threshold_enabled
+                        and gray_history_count >= history_mean_min_samples
+                        and gray_history_mean > 0
+                    ):
+                        threshold_used = gray_history_mean * (1.0 + threshold_over_mean_ratio)
                     try:
                         green_peaks_raw, red_peaks_raw = detect_peaks(
                             curve,
-                            threshold=threshold,
+                            threshold=threshold_used,
                             marginFrames=margin_frames,
                             differenceThreshold=diff_threshold,
                             silenceFrames=silence_frames,

@@ -31,7 +31,10 @@
   "peak_detection": {
     "threshold": 95.0,
     "margin_frames": 5,
-    "silence_frames": 0,
+    "silence_frames": 20,
+    "adaptive_threshold_enabled": true,
+    "threshold_over_mean_ratio": 0.15,
+    "history_mean_min_samples": 30,
     "difference_threshold": 0.5,
     "min_region_length": 5,
     "use_improved_algorithm": false,
