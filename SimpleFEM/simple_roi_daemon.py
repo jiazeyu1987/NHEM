@@ -372,12 +372,12 @@ def run_daemon() -> None:
                 # 5. Run peak detection on current gray buffer
                 green_peaks: List[Tuple[int, int]] = []
                 red_peaks: List[Tuple[int, int]] = []
+                threshold_used = threshold
 
                 if gray_buffer:
                     curve = list(gray_buffer)
                     # Compute adaptive threshold if enabled and enough history is available.
                     # threshold_used = historical_mean * (1 + ratio)
-                    threshold_used = threshold
                     if (
                         adaptive_threshold_enabled
                         and bg_count >= history_mean_min_samples
@@ -441,6 +441,8 @@ def run_daemon() -> None:
                         gray_value=roi2_gray,
                         difference_threshold=diff_threshold,
                         pre_post_avg_frames=pre_post_avg_frames,
+                        threshold_used=threshold_used,
+                        bg_mean=(bg_mean if bg_count > 0 else None),
                     )
 
                 except Exception as e:

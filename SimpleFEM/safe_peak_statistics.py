@@ -75,7 +75,15 @@ class SafePeakStatistics:
             with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 # 包含所有必要字段：peak_type, frame_index, 前后X帧平均值, 波峰最大值
                 fieldnames = [
-                    'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg', 'peak_max_value'
+                    'peak_type',
+                    'frame_index',
+                    'pre_peak_avg',
+                    'post_peak_avg',
+                    'frame_diff',
+                    'difference_threshold_used',
+                    'threshold_used',
+                    'bg_mean',
+                    'peak_max_value',
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -98,7 +106,9 @@ class SafePeakStatistics:
                             roi2_info: Optional[Dict[str, int]] = None,
                             gray_value: Optional[float] = None,
                             difference_threshold: float = 1.1,
-                            pre_post_avg_frames: int = 5):
+                            pre_post_avg_frames: int = 5,
+                            threshold_used: Optional[float] = None,
+                            bg_mean: Optional[float] = None):
         """
         从守护进程添加波峰数据
 
@@ -111,6 +121,9 @@ class SafePeakStatistics:
             roi2_info: ROI2区域信息 {'x1':, 'y1':, 'x2':, 'y2':}
             gray_value: ROI2的平均灰度值
             difference_threshold: 用于分类的差值阈值
+            pre_post_avg_frames: 前后平均灰度的帧数（默认5）
+            threshold_used: 当次检测使用的阈值（固定阈值或自适应阈值）
+            bg_mean: 当次检测时的背景均值（用于自适应阈值基线）
         """
         try:
             timestamp = datetime.now()
@@ -120,7 +133,9 @@ class SafePeakStatistics:
                 for i, (start, end) in enumerate(green_peaks):
                     peak_data = self._create_peak_data(
                         timestamp, frame_index, "green", start, end,
-                        curve, intersection, roi2_info, gray_value, difference_threshold, pre_post_avg_frames
+                        curve, intersection, roi2_info, gray_value,
+                        difference_threshold, pre_post_avg_frames,
+                        threshold_used, bg_mean
                     )
 
                     # 第一层去重：基于前后帧平均值
@@ -144,7 +159,9 @@ class SafePeakStatistics:
                 for i, (start, end) in enumerate(red_peaks):
                     peak_data = self._create_peak_data(
                         timestamp, frame_index, "red", start, end,
-                        curve, intersection, roi2_info, gray_value, difference_threshold, pre_post_avg_frames
+                        curve, intersection, roi2_info, gray_value,
+                        difference_threshold, pre_post_avg_frames,
+                        threshold_used, bg_mean
                     )
 
                     # 第一层去重：基于前后帧平均值
@@ -180,7 +197,9 @@ class SafePeakStatistics:
                          roi2_info: Optional[Dict[str, int]],
                          gray_value: Optional[float],
                          difference_threshold: float,
-                         pre_post_avg_frames: int = 5) -> Dict[str, Any]:
+                         pre_post_avg_frames: int = 5,
+                         threshold_used: Optional[float] = None,
+                         bg_mean: Optional[float] = None) -> Dict[str, Any]:
         """创建简化的波峰数据结构（只保留必要字段）"""
 
         # 计算前X帧平均值（波峰开始前5帧）
@@ -204,6 +223,7 @@ class SafePeakStatistics:
             post_avg = sum(post_values) / len(post_values) if post_values else 0.0
 
         # 计算波峰区域最大值（用于连续同色去重）
+        frame_diff = post_avg - pre_avg
         peak_max_value = self._get_peak_max_value(curve, start_frame, end_frame)
 
         return {
@@ -211,6 +231,10 @@ class SafePeakStatistics:
             'frame_index': frame_index,
             'pre_peak_avg': round(pre_avg, 2),
             'post_peak_avg': round(post_avg, 2),
+            'frame_diff': round(frame_diff, 3),
+            'difference_threshold_used': round(float(difference_threshold), 3),
+            'threshold_used': round(float(threshold_used), 3) if threshold_used is not None else 0.0,
+            'bg_mean': round(float(bg_mean), 3) if bg_mean is not None else 0.0,
             'peak_max_value': round(peak_max_value, 2)  # 新增：波峰最大值
         }
 
@@ -409,7 +433,15 @@ class SafePeakStatistics:
         try:
             # 简化的字段列表（只保存CSV中需要的字段）
             fieldnames = [
-                'peak_type', 'frame_index', 'pre_peak_avg', 'post_peak_avg', 'peak_max_value'
+                'peak_type',
+                'frame_index',
+                'pre_peak_avg',
+                'post_peak_avg',
+                'frame_diff',
+                'difference_threshold_used',
+                'threshold_used',
+                'bg_mean',
+                'peak_max_value',
             ]
 
             # 过滤数据，只包含CSV需要的字段
