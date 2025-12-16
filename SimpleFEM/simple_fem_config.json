@@ -6,7 +6,7 @@
     "save_roi1": true,
     "save_roi2": true,
     "save_wave": true,
-    "only_delect": true
+    "only_delect": false
   },
   "video_processing": {
     "_comment": "processing_mode=video 时生效：从本地视频读取帧作为输入。",
@@ -41,7 +41,7 @@
     "_comment_threshold": "固定阈值：自适应阈值未启用或历史样本不足时，使用该阈值判定“灰度>=阈值”为高位。",
     "margin_frames": 5,
     "_comment_margin_frames": "峰间最小间隔：两个波峰间隔小于该值时只保留峰值更高的那个。",
-    "silence_frames": 20,
+    "silence_frames": 5,
     "_comment_silence_frames": "干净区间长度 X：波峰升上阈值前 X 帧、降回阈值后 X 帧都必须 < 阈值，否则不算波峰（会增加确认延迟）。",
     "pre_post_avg_frames": 5,
     "_comment_pre_post_avg_frames": "用于计算 pre_peak_avg/post_peak_avg 的窗口帧数 N（绿/红判定也基于同一个 N）。",
